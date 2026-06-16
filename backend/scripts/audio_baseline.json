@@ -1,0 +1,35 @@
+{
+  "_comment": "Minimum audio-quality baseline frozen at git tag v0.1.0-audio-baseline (2026-06-17). Future changes must NOT regress below these. Values are the acceptance targets from instruction.txt, anchored to the measured working state. The audio bench reads this to decide pass/fail. Edit ONLY when intentionally raising the bar.",
+  "git_tag": "v0.1.0-audio-baseline",
+  "frozen_on": "2026-06-17",
+  "natural_stereo": {
+    "pan_range_min": 1.0,
+    "lr_correlation_max": 0.985,
+    "lr_balance_abs_db_max": 1.5,
+    "snr_db_min": 30.0,
+    "peak_dbfs_max": -1.0,
+    "peak_dbfs_min": -6.0,
+    "clip_count_max": 0
+  },
+  "studio_voice": {
+    "snr_db_min": 30.0,
+    "keep_stereo_correlation_max": 0.985,
+    "reverb_sustain_over_natural_max": 0.08
+  },
+  "sync": {
+    "raw_offset_ms_max": 50.0,
+    "drift_ms_max": 50.0
+  },
+  "duplicate": {
+    "dup_prominence_max": 0.45
+  },
+  "measured_reference": {
+    "_comment": "What we actually measured at freeze time (for context, not enforced directly).",
+    "natural_pan_range": 1.34,
+    "natural_lr_correlation": 0.57,
+    "natural_snr_db": 36.6,
+    "studio_voice_snr_db": 52.8,
+    "sync_offset_ms": 0.0,
+    "drift_ms": 1.2
+  }
+}
