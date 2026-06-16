@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "MultiMic Studio",
+    "slug": "multimic-studio",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "multimic",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#0b1020"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "ai.multimic.studio",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "MultiMic Studio uses your microphone to record this session. Recording is always shown on screen; never record people without their consent."
+      }
+    },
+    "android": {
+      "package": "ai.multimic.studio",
+      "permissions": [
+        "RECORD_AUDIO",
+        "INTERNET"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-av",
+        {
+          "microphonePermission": "Allow MultiMic Studio to access your microphone to record sessions."
+        }
+      ]
+    ]
+  }
+}

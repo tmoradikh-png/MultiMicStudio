@@ -1,0 +1,36 @@
+# --- Python (backend) ---
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+.mypy_cache/
+
+# Local data / generated at runtime (not source)
+*.db
+*.sqlite3
+backend/storage/
+backend/bench_out/
+backend/bench_gui_*/
+**/_validate_*.py
+
+# --- Node (web + mobile) ---
+node_modules/
+.next/
+.expo/
+.turbo/
+dist/
+build/
+*.tsbuildinfo
+
+# --- Env / secrets ---
+.env
+.env.*
+!.env.example
+
+# --- Editor / OS ---
+.DS_Store
+Thumbs.db
+.vscode/
+*.log
