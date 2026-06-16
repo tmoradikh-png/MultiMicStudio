@@ -146,3 +146,36 @@ class ProjectListItem(BaseModel):
     processing_status: ProcessingStatus | None
     final_audio_url: str | None
     created_at: datetime
+
+
+# --- Outputs + quality badge ---
+class OutputItem(BaseModel):
+    """One playable/downloadable output role for the dashboard."""
+    role: str  # raw_phone_1 | raw_phone_2 | natural_stereo | studio_voice | karaoke | party | mono_downmix
+    label: str
+    url: str | None
+    kind: str  # "raw" | "mix"
+    available: bool
+
+
+class QualitySummaryItem(BaseModel):
+    question: str
+    answer: str
+    good: bool
+
+
+class QualityBadge(BaseModel):
+    ok: bool
+    passed: int
+    total: int
+    failed: int
+    baseline_failed: int
+    baseline_total: int
+    summary: list[QualitySummaryItem] = []
+
+
+class ProjectOutputs(BaseModel):
+    session_id: str
+    processing_status: ProcessingStatus
+    outputs: list[OutputItem]
+    quality: QualityBadge | None = None

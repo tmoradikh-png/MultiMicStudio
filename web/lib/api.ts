@@ -70,6 +70,37 @@ export interface Project {
 
 export type EnhancementMode = "natural" | "studio_voice" | "karaoke" | "party";
 
+export interface OutputItem {
+  role: string;
+  label: string;
+  url: string | null;
+  kind: "raw" | "mix";
+  available: boolean;
+}
+
+export interface QualitySummaryItem {
+  question: string;
+  answer: string;
+  good: boolean;
+}
+
+export interface QualityBadge {
+  ok: boolean;
+  passed: number;
+  total: number;
+  failed: number;
+  baseline_failed: number;
+  baseline_total: number;
+  summary: QualitySummaryItem[];
+}
+
+export interface ProjectOutputs {
+  session_id: string;
+  processing_status: string;
+  outputs: OutputItem[];
+  quality: QualityBadge | null;
+}
+
 export const api = {
   async login(email: string, password: string): Promise<string> {
     const res = await fetch(`${API_BASE_URL}/auth/login`, {
@@ -95,6 +126,14 @@ export const api = {
       cache: "no-store",
     });
     return handle<Project>(res);
+  },
+
+  async getOutputs(sessionId: string): Promise<ProjectOutputs> {
+    const res = await fetch(`${API_BASE_URL}/projects/${sessionId}/outputs`, {
+      headers: authHeaders(),
+      cache: "no-store",
+    });
+    return handle<ProjectOutputs>(res);
   },
 
   async processSession(sessionId: string): Promise<void> {

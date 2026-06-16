@@ -3,23 +3,24 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { absoluteUrl, api, getToken, type EnhancementMode, type Project } from "@/lib/api";
-
-const ENHANCEMENT_MODES: { id: EnhancementMode; label: string; hint: string }[] = [
-  { id: "natural", label: "Natural Stereo", hint: "True left/right separation, minimal processing (reference)" },
-  { id: "studio_voice", label: "Studio Voice", hint: "Cleaner, fuller voice — EQ, leveling, noise reduction" },
-  { id: "karaoke", label: "Singing / Karaoke", hint: "Vocal reverb and light echo" },
-  { id: "party", label: "Party / Room", hint: "Wider stereo and more room ambience" },
-];
+import {
+  absoluteUrl,
+  api,
+  getToken,
+  type OutputItem,
+  type Project,
+  type ProjectOutputs,
+} from "@/lib/api";
 
 export default function ProjectDetailPage() {
   const router = useRouter();
   const params = useParams<{ sessionId: string }>();
   const sessionId = params.sessionId;
   const [project, setProject] = useState<Project | null>(null);
+  const [outputs, setOutputs] = useState<ProjectOutputs | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notReady, setNotReady] = useState(false);
-  const [enhancing, setEnhancing] = useState<EnhancementMode | null>(null);
+  const [shared, setShared] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -27,6 +28,13 @@ export default function ProjectDetailPage() {
       setProject(data);
       setNotReady(false);
       setError(null);
+      if (data.processing_status === "done") {
+        try {
+          setOutputs(await api.getOutputs(sessionId));
+        } catch {
+          /* outputs are best-effort; the rest of the page still renders */
+        }
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Could not load project";
       // 404 => project not processed yet; keep polling quietly.
@@ -57,25 +65,31 @@ export default function ProjectDetailPage() {
     }
   }
 
-  async function onEnhance(mode: EnhancementMode) {
-    setEnhancing(mode);
-    setError(null);
+  async function onShare(item: OutputItem) {
+    const url = absoluteUrl(item.url);
+    if (!url) return;
+    const shareData = {
+      title: `MultiMic — ${item.label}`,
+      text: `${item.label} from this recording session`,
+      url,
+    };
     try {
-      const updated = await api.enhanceProject(sessionId, mode);
-      setProject(updated);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not apply enhancement");
-    } finally {
-      setEnhancing(null);
+      if (typeof navigator !== "undefined" && navigator.share) {
+        await navigator.share(shareData);
+        return;
+      }
+      if (typeof navigator !== "undefined" && navigator.clipboard) {
+        await navigator.clipboard.writeText(url);
+        setShared(item.role);
+        setTimeout(() => setShared((r) => (r === item.role ? null : r)), 1800);
+      }
+    } catch {
+      /* user cancelled share or clipboard blocked — no-op */
     }
   }
 
-  const audioUrl = absoluteUrl(project?.final_audio_url ?? null);
-  const stereoUrl = absoluteUrl(project?.final_audio_stereo_url ?? null);
-  const enhancedUrl = absoluteUrl(project?.final_audio_enhanced_url ?? null);
-  const activeMode = (project?.enhancement_mode ?? "natural") as EnhancementMode;
-  const stems = project?.stems ?? [];
   const status = project?.processing_status ?? (notReady ? "pending" : "");
+  const quality = outputs?.quality ?? null;
 
   return (
     <div className="container">
@@ -83,7 +97,21 @@ export default function ProjectDetailPage() {
         <Link href="/projects" className="button ghost">
           ← Back
         </Link>
-        {status ? <span className={`badge ${status}`}>{status}</span> : null}
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {quality ? (
+            <span
+              className={`badge ${quality.ok ? "pass" : "fail"}`}
+              title={`${quality.passed}/${quality.total} quality checks passed${
+                quality.baseline_failed
+                  ? `, ${quality.baseline_failed} below baseline`
+                  : ""
+              }`}
+            >
+              {quality.ok ? "Quality: PASS" : "Quality: REVIEW"}
+            </span>
+          ) : null}
+          {status ? <span className={`badge ${status}`}>{status}</span> : null}
+        </div>
       </div>
 
       <h1 className="title">Project</h1>
@@ -118,87 +146,75 @@ export default function ProjectDetailPage() {
         </div>
       ) : null}
 
-      {stereoUrl ? (
+      {/* Quality summary — reuses the QA bench checks (same as the bench report). */}
+      {quality ? (
         <div className="card">
-          <strong>Final mix — stereo (Phone A left · Phone B right)</strong>
-          <audio controls src={stereoUrl} />
-          <p style={{ marginTop: 10 }}>
-            <a href={stereoUrl} download>
-              Download stereo mix
-            </a>
-          </p>
-        </div>
-      ) : null}
-
-      {stereoUrl ? (
-        <div className="card">
-          <strong>Audio enhancement</strong>
-          <p className="subtitle" style={{ marginTop: 6 }}>
-            Optional presets applied on top of the natural stereo mix above. The
-            natural mix is always kept for comparison; effects never change the
-            timing or stereo position.
-          </p>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
-            {ENHANCEMENT_MODES.map((m) => {
-              const isActive = activeMode === m.id;
-              return (
-                <button
-                  key={m.id}
-                  className={`button ${isActive ? "" : "ghost"}`}
-                  disabled={enhancing !== null}
-                  onClick={() => onEnhance(m.id)}
-                  title={m.hint}
-                >
-                  {enhancing === m.id ? "Applying…" : m.label}
-                </button>
-              );
-            })}
+          <div className="row">
+            <strong>Quality check</strong>
+            <span className={`badge ${quality.ok ? "pass" : "fail"}`}>
+              {quality.passed}/{quality.total} passed
+            </span>
           </div>
-          <p className="subtitle" style={{ marginTop: 10 }}>
-            {ENHANCEMENT_MODES.find((m) => m.id === activeMode)?.hint}
+          <p className="subtitle" style={{ marginTop: 6 }}>
+            {quality.ok
+              ? "This recording meets the saved quality baseline — good to share."
+              : "Some checks need review before this is demo-ready (see below)."}
           </p>
-          {enhancedUrl && activeMode !== "natural" ? (
-            <div style={{ marginTop: 12 }}>
-              <strong>Enhanced mix — {ENHANCEMENT_MODES.find((m) => m.id === activeMode)?.label}</strong>
-              <audio controls src={enhancedUrl} />
-              <p style={{ marginTop: 10 }}>
-                <a href={enhancedUrl} download>
-                  Download enhanced mix
-                </a>
-              </p>
-            </div>
+          {quality.summary.length ? (
+            <ul className="qa-list">
+              {quality.summary.map((s, i) => (
+                <li key={i}>
+                  <span className={`qa-mark ${s.good ? "good" : "bad"}`}>
+                    {s.good ? "✓" : "!"}
+                  </span>
+                  <span style={{ flex: 1 }}>{s.question}</span>
+                  <strong>{s.answer}</strong>
+                </li>
+              ))}
+            </ul>
           ) : null}
         </div>
       ) : null}
 
-      {audioUrl ? (
+      {/* All output roles: raw phones, natural stereo, presets, mono down-mix. */}
+      {outputs ? (
         <div className="card">
-          <strong>Final mix — mono</strong>
-          <audio controls src={audioUrl} />
-          <p style={{ marginTop: 10 }}>
-            <a href={audioUrl} download>
-              Download mono mix
-            </a>
+          <strong>Outputs</strong>
+          <p className="subtitle" style={{ marginTop: 6 }}>
+            Every recording and mix from this session. Natural stereo is the
+            reference; the presets are applied on top without changing timing or
+            stereo position.
           </p>
-        </div>
-      ) : null}
-
-      {stems.length ? (
-        <div className="card">
-          <strong>Individual tracks (stems)</strong>
-          {stems.map((s, i) => {
-            const url = absoluteUrl(s.content);
+          {outputs.outputs.map((o) => {
+            const url = absoluteUrl(o.url);
             return (
-              <div key={s.id} style={{ marginTop: 10 }}>
-                <span className="subtitle">Track {i + 1}</span>
-                {url ? <audio controls src={url} /> : null}
-                {url ? (
-                  <p style={{ marginTop: 6 }}>
-                    <a href={url} download>
-                      Download track {i + 1}
-                    </a>
-                  </p>
-                ) : null}
+              <div
+                key={o.role}
+                className="card"
+                style={{ marginTop: 12, background: "transparent" }}
+              >
+                <div className="output-head">
+                  <strong>{o.label}</strong>
+                  <span className="tag">{o.kind === "raw" ? "Raw phone" : "Mix"}</span>
+                </div>
+                {url && o.available ? (
+                  <>
+                    <audio controls preload="none" src={url} />
+                    <div className="output-actions" style={{ marginTop: 10 }}>
+                      <a className="button ghost small" href={url} download>
+                        Download
+                      </a>
+                      <button
+                        className="button ghost small"
+                        onClick={() => onShare(o)}
+                      >
+                        {shared === o.role ? "Link copied ✓" : "Share"}
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <p className="unavailable">Not available for this session.</p>
+                )}
               </div>
             );
           })}

@@ -144,3 +144,96 @@ audio {
   width: 100%;
   margin-top: 8px;
 }
+
+/* Quality pass/fail badge + summary */
+.badge.pass {
+  color: var(--success);
+  border-color: var(--success);
+}
+
+.badge.fail {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.badge.unknown {
+  color: var(--muted);
+  border-color: var(--border);
+}
+
+.qa-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+}
+
+.qa-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+
+.qa-list li:first-child {
+  border-top: none;
+}
+
+.qa-mark {
+  font-size: 12px;
+  font-weight: 800;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.qa-mark.good {
+  color: var(--success);
+  border: 1px solid var(--success);
+}
+
+.qa-mark.bad {
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+/* Output role cards */
+.output-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.output-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.button.small {
+  padding: 7px 12px;
+  font-size: 13px;
+}
+
+.tag {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.unavailable {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 8px;
+}
+

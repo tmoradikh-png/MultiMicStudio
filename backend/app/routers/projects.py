@@ -6,18 +6,26 @@ import soundfile as sf
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.audio import effects, processing
+from app.audio import effects, processing, quality
 from app.database import get_db
 from app.deps import get_current_user
 from app.models import (
     ProcessedProject,
     ProcessingStatus,
     RecordingSession,
+    SessionParticipant,
     User,
 )
-from app.schemas import EnhanceRequest, ProjectListItem, ProjectOut
+from app.schemas import (
+    EnhanceRequest,
+    OutputItem,
+    ProjectListItem,
+    ProjectOut,
+    ProjectOutputs,
+    QualityBadge,
+)
 from app.storage import get_storage, key_to_relpath
-from app.worker.tasks import dispatch_processing
+from app.worker.tasks import _select_input_recordings, dispatch_processing
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -151,3 +159,147 @@ def get_project(
     if session.project is None:
         raise HTTPException(status_code=404, detail="Project not processed yet")
     return session.project
+
+
+def _ensure_enhanced(storage, session_id: str, stereo_url: str, mode: str) -> str:
+    """Return the URL for an enhanced preset, rendering + caching it if missing.
+
+    Deterministic key per (session, mode); rendered once from the natural stereo
+    mix using the exact app preset code. Length-preserving, so it can never
+    stack/duplicate audio. Does NOT change the natural mix or audio logic.
+    """
+    key = f"projects/{session_id}/final_mix_{mode}.wav"
+    if Path(storage.path(key)).exists():
+        return storage.public_url(key)
+    src = storage.path(key_to_relpath(stereo_url))
+    data, sr = sf.read(src, dtype="float32", always_2d=True)
+    enhanced = effects.apply_enhancement(data, sr, mode)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = str(Path(tmp) / f"final_mix_{mode}.wav")
+        processing.write_wav(enhanced, sr, out)
+        with open(out, "rb") as fh:
+            return storage.save(key, fh)
+
+
+@router.get("/{session_id}/outputs", response_model=ProjectOutputs)
+def get_project_outputs(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> ProjectOutputs:
+    """All output roles (players + downloads) for one session, plus a quality badge.
+
+    Surfaces every role in one place for the dashboard: the two raw phones, the
+    natural stereo mix, the studio_voice / karaoke / party presets (rendered on
+    demand and cached), and the mono down-mix. The quality badge reuses the QA
+    bench checks so it matches the bench report. Read-only; never re-mixes.
+    """
+    session = db.get(RecordingSession, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.owner_user_id != user.id:
+        raise HTTPException(status_code=403, detail="Not the session owner")
+    project = session.project
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not processed yet")
+
+    storage = get_storage()
+    outputs: list[OutputItem] = []
+
+    # Raw phones — the deduped per-participant inputs for the latest take.
+    recs = _select_input_recordings(db, session_id)
+    part_names = {
+        p.id: p.speaker_name
+        for p in db.query(SessionParticipant)
+        .filter(SessionParticipant.session_id == session_id)
+        .all()
+    }
+    for i, r in enumerate(recs[:2], start=1):
+        name = part_names.get(r.participant_id, f"Phone {i}")
+        outputs.append(
+            OutputItem(
+                role=f"raw_phone_{i}",
+                label=f"Raw — {name}",
+                url=r.file_url,
+                kind="raw",
+                available=bool(r.file_url),
+            )
+        )
+
+    stereo_url = project.final_audio_stereo_url
+    outputs.append(
+        OutputItem(
+            role="natural_stereo",
+            label="Natural stereo",
+            url=stereo_url,
+            kind="mix",
+            available=bool(stereo_url),
+        )
+    )
+
+    # Enhanced presets — rendered on demand from the natural stereo mix.
+    studio_url = None
+    if stereo_url:
+        for mode, label in (
+            ("studio_voice", "Studio Voice"),
+            ("karaoke", "Singing / Karaoke"),
+            ("party", "Party / Room"),
+        ):
+            try:
+                url = _ensure_enhanced(storage, session_id, stereo_url, mode)
+            except Exception:  # noqa: BLE001
+                url = None
+            if mode == "studio_voice":
+                studio_url = url
+            outputs.append(
+                OutputItem(
+                    role=mode,
+                    label=label,
+                    url=url,
+                    kind="mix",
+                    available=bool(url),
+                )
+            )
+    else:
+        for mode, label in (
+            ("studio_voice", "Studio Voice"),
+            ("karaoke", "Singing / Karaoke"),
+            ("party", "Party / Room"),
+        ):
+            outputs.append(
+                OutputItem(role=mode, label=label, url=None, kind="mix", available=False)
+            )
+
+    mono_url = project.final_audio_url
+    outputs.append(
+        OutputItem(
+            role="mono_downmix",
+            label="Mono down-mix",
+            url=mono_url,
+            kind="mix",
+            available=bool(mono_url),
+        )
+    )
+
+    # Quality badge (best-effort; reuses the QA bench checks).
+    badge = None
+    raw_paths = [
+        storage.path(key_to_relpath(r.file_url)) for r in recs if r.file_url
+    ]
+    natural_path = (
+        storage.path(key_to_relpath(stereo_url)) if stereo_url else None
+    )
+    studio_path = (
+        storage.path(key_to_relpath(studio_url)) if studio_url else None
+    )
+    result = quality.evaluate(natural_path, raw_paths, studio_path)
+    if result is not None:
+        badge = QualityBadge(**result)
+
+    return ProjectOutputs(
+        session_id=session_id,
+        processing_status=project.processing_status,
+        outputs=outputs,
+        quality=badge,
+    )
+
