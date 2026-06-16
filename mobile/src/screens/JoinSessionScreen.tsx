@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { api } from "../api/client";
+import { api, describeError } from "../api/client";
 import { colors, styles } from "../theme";
 import type { RootStackParamList } from "../navigation/types";
 
@@ -14,21 +14,22 @@ export default function JoinSessionScreen({ navigation }: Props) {
   const [busy, setBusy] = useState(false);
 
   async function onJoin() {
+    const trimmed = code.trim().toUpperCase();
+    if (trimmed.length < 6) {
+      setError("Enter the full 6‑character session code from the host.");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      const result = await api.joinSession(
-        code.trim().toUpperCase(),
-        speakerName.trim(),
-        "mobile",
-      );
+      const result = await api.joinSession(trimmed, speakerName.trim(), "mobile");
       navigation.replace("Record", {
         session: result.session,
         participant: result.participant,
         role: "speaker_mic",
       });
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not join session");
+      setError(describeError(e));
     } finally {
       setBusy(false);
     }

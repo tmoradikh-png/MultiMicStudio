@@ -2,6 +2,7 @@ import React from "react";
 import { Pressable, Text, View } from "react-native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useAuth } from "../context/AuthContext";
+import ResumeBanner from "../components/ResumeBanner";
 import { styles } from "../theme";
 import type { RootStackParamList } from "../navigation/types";
 
@@ -16,6 +17,10 @@ export default function HomeScreen({ navigation }: Props) {
       <Text style={styles.subtitle}>
         Use the phones you already own as a recording studio.
       </Text>
+
+      <ResumeBanner
+        onResume={(params) => navigation.navigate("Record", params)}
+      />
 
       <Pressable
         style={styles.card}

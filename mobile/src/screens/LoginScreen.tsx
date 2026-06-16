@@ -9,6 +9,8 @@ import {
 } from "react-native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useAuth } from "../context/AuthContext";
+import { describeError } from "../api/client";
+import ResumeBanner from "../components/ResumeBanner";
 import { colors, styles } from "../theme";
 import type { RootStackParamList } from "../navigation/types";
 
@@ -27,7 +29,7 @@ export default function LoginScreen({ navigation }: Props) {
     try {
       await signIn(email.trim(), password);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Login failed");
+      setError(describeError(e));
     } finally {
       setBusy(false);
     }
@@ -40,6 +42,10 @@ export default function LoginScreen({ navigation }: Props) {
     >
       <Text style={styles.title}>MultiMic Studio</Text>
       <Text style={styles.subtitle}>Sign in to start recording.</Text>
+
+      <ResumeBanner
+        onResume={(params) => navigation.navigate("Record", params)}
+      />
 
       <Text style={styles.label}>Email</Text>
       <TextInput

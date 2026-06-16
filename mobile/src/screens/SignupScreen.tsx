@@ -8,6 +8,7 @@ import {
 } from "react-native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useAuth } from "../context/AuthContext";
+import { describeError } from "../api/client";
 import { colors, styles } from "../theme";
 import type { RootStackParamList } from "../navigation/types";
 
@@ -27,7 +28,7 @@ export default function SignupScreen({ navigation }: Props) {
     try {
       await signUp(email.trim(), name.trim(), password);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Signup failed");
+      setError(describeError(e));
     } finally {
       setBusy(false);
     }

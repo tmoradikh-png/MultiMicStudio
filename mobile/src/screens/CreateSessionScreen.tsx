@@ -1,8 +1,8 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Pressable, Share, Text, TextInput, View } from "react-native";
 import QRCode from "react-native-qrcode-svg";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { api, type SessionData } from "../api/client";
+import { api, describeError, type SessionData } from "../api/client";
 import { colors, styles } from "../theme";
 import type { RootStackParamList } from "../navigation/types";
 
@@ -14,6 +14,25 @@ export default function CreateSessionScreen({ navigation }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // Once the session exists, poll for joiners so the host sees phones connect
+  // before starting (clear host flow: create → share code → see participants).
+  useEffect(() => {
+    if (!session) return;
+    let active = true;
+    const poll = setInterval(async () => {
+      try {
+        const s = await api.getSession(session.id);
+        if (active) setSession(s);
+      } catch {
+        // Ignore transient errors; keep last known state.
+      }
+    }, 2500);
+    return () => {
+      active = false;
+      clearInterval(poll);
+    };
+  }, [session?.id]);
+
   async function onCreate() {
     setBusy(true);
     setError(null);
@@ -21,7 +40,7 @@ export default function CreateSessionScreen({ navigation }: Props) {
       const created = await api.createSession(title.trim() || "Untitled session");
       setSession(created);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not create session");
+      setError(describeError(e));
     } finally {
       setBusy(false);
     }
@@ -36,6 +55,7 @@ export default function CreateSessionScreen({ navigation }: Props) {
   }
 
   if (session) {
+    const guests = session.participants.filter((p) => p.role !== "host");
     return (
       <View style={[styles.screen, styles.center]}>
         <Text style={styles.title}>{session.title}</Text>
@@ -49,6 +69,23 @@ export default function CreateSessionScreen({ navigation }: Props) {
           <View style={{ backgroundColor: "#fff", padding: 12, borderRadius: 12 }}>
             <QRCode value={session.code} size={170} />
           </View>
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.label}>
+            Joined ({guests.length})
+          </Text>
+          {guests.length === 0 ? (
+            <Text style={[styles.subtitle, { marginBottom: 0 }]}>
+              Waiting for phones to join…
+            </Text>
+          ) : (
+            guests.map((p) => (
+              <Text key={p.id} style={[styles.subtitle, { marginBottom: 4 }]}>
+                • {p.speaker_name}
+              </Text>
+            ))
+          )}
         </View>
 
         <Pressable

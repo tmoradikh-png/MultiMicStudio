@@ -159,49 +159,80 @@ export async function playSyncBeep(): Promise<void> {
 
 // Upload with simple retry. The backend contract (register+upload in one request)
 // is ready to evolve into resumable chunk uploads without changing this call site.
+// `onProgress` (0..1) drives the upload bar; `onAttempt` reports retry numbers so
+// the UI can show "Retrying (2/3)…". Retries reuse the SAME participant + guest
+// token (via getAuthToken), so the backend dedups and never duplicates audio.
+export interface UploadHandlers {
+  onProgress?: (fraction: number) => void;
+  onAttempt?: (attempt: number, maxRetries: number) => void;
+}
+
 export async function uploadRecording(
   sessionId: string,
   participantId: string,
   takeId: string | null,
   rec: FinishedRecording,
+  handlers: UploadHandlers = {},
   maxRetries = 3,
 ): Promise<void> {
   const token = await getAuthToken();
   const fileInfo = await FileSystem.getInfoAsync(rec.uri);
   if (!fileInfo.exists) throw new Error("Local recording file missing");
 
+  const headers: Record<string, string> = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const options = {
+    httpMethod: "POST" as const,
+    uploadType: FileSystem.FileSystemUploadType.MULTIPART,
+    fieldName: "file",
+    mimeType: "audio/m4a",
+    parameters: {
+      session_id: sessionId,
+      participant_id: participantId,
+      ...(takeId ? { take_id: takeId } : {}),
+      local_start_timestamp: String(rec.startedAtMs),
+      duration_seconds: String(rec.durationSeconds),
+      sample_rate: "48000",
+    },
+    headers,
+  };
+
   let attempt = 0;
   // eslint-disable-next-line no-constant-condition
   while (true) {
+    attempt += 1;
+    handlers.onAttempt?.(attempt, maxRetries);
+    handlers.onProgress?.(0);
     try {
-      const result = await FileSystem.uploadAsync(
+      const task = FileSystem.createUploadTask(
         `${API_BASE_URL}/recordings`,
         rec.uri,
-        {
-          httpMethod: "POST",
-          uploadType: FileSystem.FileSystemUploadType.MULTIPART,
-          fieldName: "file",
-          mimeType: "audio/m4a",
-          parameters: {
-            session_id: sessionId,
-            participant_id: participantId,
-            ...(takeId ? { take_id: takeId } : {}),
-            local_start_timestamp: String(rec.startedAtMs),
-            duration_seconds: String(rec.durationSeconds),
-            sample_rate: "48000",
-          },
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        options,
+        (data) => {
+          const total = data.totalBytesExpectedToSend;
+          if (total > 0) {
+            handlers.onProgress?.(
+              Math.min(1, data.totalBytesSent / total),
+            );
+          }
         },
       );
-      if (result.status >= 200 && result.status < 300) return;
+      const result = await task.uploadAsync();
+      if (result && result.status >= 200 && result.status < 300) {
+        handlers.onProgress?.(1);
+        return;
+      }
       // Surface the backend's error body so the phone shows the real reason.
-      const detail = (result.body || "").slice(0, 300);
+      const detail = (result?.body || "").slice(0, 300);
       throw new Error(
-        `Upload failed (HTTP ${result.status})${detail ? `: ${detail}` : ""}`,
+        `Upload failed (HTTP ${result?.status ?? "?"})${
+          detail ? `: ${detail}` : ""
+        }`,
       );
     } catch (err) {
-      attempt += 1;
       if (attempt >= maxRetries) throw err;
+      // Back off briefly, then retry the SAME file/participant/token.
       await new Promise((r) => setTimeout(r, 1000 * attempt));
     }
   }

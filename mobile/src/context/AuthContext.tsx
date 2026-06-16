@@ -6,7 +6,7 @@ import React, {
   useState,
 } from "react";
 import { api } from "../api/client";
-import { clearToken, getToken, setToken } from "../api/client";
+import { clearActiveSession, clearToken, getToken, setToken } from "../api/client";
 
 interface AuthContextValue {
   token: string | null;
@@ -45,6 +45,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       },
       async signOut() {
         await clearToken();
+        await clearActiveSession();
         setTokenState(null);
       },
     }),

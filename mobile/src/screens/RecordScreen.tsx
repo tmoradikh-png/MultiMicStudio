@@ -1,7 +1,14 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { api } from "../api/client";
+import {
+  api,
+  clearActiveSession,
+  describeError,
+  getToken,
+  setActiveSession,
+  type Participant,
+} from "../api/client";
 import {
   Recorder,
   uploadRecording,
@@ -36,6 +43,13 @@ export default function RecordScreen({ route, navigation }: Props) {
   const [phase, setPhase] = useState<Phase>("ready");
   const [elapsed, setElapsed] = useState(0);
   const [message, setMessage] = useState<string | null>(null);
+  // Upload progress (0..1) + which retry attempt is running, for the upload bar.
+  const [uploadPct, setUploadPct] = useState(0);
+  const [uploadAttempt, setUploadAttempt] = useState<{ n: number; max: number } | null>(
+    null,
+  );
+  // Host-only: live list of phones that have joined this session.
+  const [members, setMembers] = useState<Participant[]>(session.participants ?? []);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isHost = role === "host";
 
@@ -51,6 +65,48 @@ export default function RecordScreen({ route, navigation }: Props) {
     };
   }, []);
 
+  // Remember this as the active session so an app restart can resume straight
+  // back into it (reusing the same guest token / participant — no duplicate).
+  // A phone is a "guest" for resume purposes when it has no account token: the
+  // host (account) re-fetches the session; a no-account guest reconnects by code.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const hasAccount = !!(await getToken());
+      if (cancelled) return;
+      await setActiveSession({
+        sessionId: session.id,
+        code: session.code,
+        participantId: participant.id,
+        speakerName: participant.speaker_name,
+        role: isHost ? "host" : "speaker_mic",
+        isGuest: !hasAccount,
+      });
+    })().catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [session.id, session.code, participant.id, participant.speaker_name, isHost]);
+
+  // Host sees who has joined: poll the full session (owner-only) for the live
+  // participant list so the host knows everyone is connected before starting.
+  useEffect(() => {
+    if (!isHost) return;
+    let active = true;
+    const poll = setInterval(async () => {
+      try {
+        const s = await api.getSession(session.id);
+        if (active) setMembers(s.participants);
+      } catch {
+        // Ignore transient errors; keep the last known list.
+      }
+    }, 2500);
+    return () => {
+      active = false;
+      clearInterval(poll);
+    };
+  }, [isHost, session.id]);
+
   // Fully reset per-take state so a second recording in the same login never
   // reuses an old recorder, file uri, timestamp, duration, phase or error.
   function resetForNewTake() {
@@ -60,6 +116,8 @@ export default function RecordScreen({ route, navigation }: Props) {
     recorderRef.current = new Recorder(); // fresh instance before each take
     setElapsed(0);
     setMessage(null);
+    setUploadPct(0);
+    setUploadAttempt(null);
   }
 
   // Guests follow the host: poll session status and auto-start/stop so a joined
@@ -141,7 +199,7 @@ export default function RecordScreen({ route, navigation }: Props) {
       setMessage("Recording. All phones are synced to the beep.");
       setPhase("recording");
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : "Could not start recording");
+      setMessage(describeError(e));
       setPhase("error");
     }
   }
@@ -156,13 +214,14 @@ export default function RecordScreen({ route, navigation }: Props) {
         await api.stopSession(session.id).catch(() => undefined);
       }
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : "Recording failed");
+      setMessage(describeError(e));
       setPhase("error");
     }
   }
 
   async function doUpload(finished: FinishedRecording) {
     setPhase("uploading");
+    setUploadPct(0);
     setMessage("Uploading your audio\u2026");
     try {
       await uploadRecording(
@@ -170,13 +229,20 @@ export default function RecordScreen({ route, navigation }: Props) {
         participant.id,
         takeIdRef.current,
         finished,
+        {
+          onProgress: setUploadPct,
+          onAttempt: (n, max) =>
+            setUploadAttempt(n > 1 ? { n, max } : null),
+        },
       );
+      setUploadAttempt(null);
       setPhase("uploaded");
       setMessage("Uploaded. Your part is safely stored.");
     } catch (e) {
-      // Local recording is kept in finishedRef so the user can retry.
+      // Local recording is kept in finishedRef so the user can retry. Retrying
+      // reuses the same participant + guest token, so the mix never duplicates.
       setMessage(
-        (e instanceof Error ? e.message : "Upload failed") +
+        describeError(e) +
           "\nYour recording is saved on this phone \u2014 tap Retry upload.",
       );
       setPhase("upload_failed");
@@ -191,11 +257,19 @@ export default function RecordScreen({ route, navigation }: Props) {
 
   async function onProcess() {
     try {
-      setMessage("Processing started. Track progress on the web dashboard.");
+      setMessage(
+        "Processing started. Open the web dashboard to see the mix, presets and quality badge.",
+      );
       await api.processSession(session.id);
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : "Could not start processing");
+      setMessage(describeError(e));
     }
+  }
+
+  function onDone() {
+    // Leaving the session for good: forget the active-session recovery marker.
+    clearActiveSession().catch(() => undefined);
+    navigation.popToTop();
   }
 
   const mmss = `${String(Math.floor(elapsed / 60)).padStart(2, "0")}:${String(
@@ -249,6 +323,25 @@ export default function RecordScreen({ route, navigation }: Props) {
         <Text style={styles.code}>{session.code}</Text>
       </View>
 
+      {/* Host sees the phones that have joined, live. */}
+      {isHost ? (
+        <View style={styles.card}>
+          <Text style={styles.label}>
+            Connected phones ({members.length})
+          </Text>
+          {members.map((m) => (
+            <Text key={m.id} style={[styles.subtitle, { marginBottom: 4 }]}>
+              {m.role === "host" ? "★ " : "• "}
+              {m.speaker_name}
+              {m.role === "host" ? " (you, host)" : ""}
+            </Text>
+          ))}
+          <Text style={[styles.subtitle, { marginBottom: 0, fontSize: 13 }]}>
+            Others join with the code above. Start when everyone is in.
+          </Text>
+        </View>
+      ) : null}
+
       {message ? (
         <Text
           style={
@@ -259,6 +352,34 @@ export default function RecordScreen({ route, navigation }: Props) {
         >
           {message}
         </Text>
+      ) : null}
+
+      {/* Upload progress + retry indicator. */}
+      {phase === "uploading" ? (
+        <View style={styles.card}>
+          <Text style={styles.label}>
+            {uploadAttempt
+              ? `Retrying upload (${uploadAttempt.n}/${uploadAttempt.max})…`
+              : `Uploading… ${Math.round(uploadPct * 100)}%`}
+          </Text>
+          <View
+            style={{
+              height: 10,
+              borderRadius: 5,
+              backgroundColor: colors.border,
+              overflow: "hidden",
+              marginTop: 8,
+            }}
+          >
+            <View
+              style={{
+                height: 10,
+                width: `${Math.max(4, Math.round(uploadPct * 100))}%`,
+                backgroundColor: colors.primary,
+              }}
+            />
+          </View>
+        </View>
       ) : null}
 
       {/* Host drives recording. Guests start/stop automatically with the host. */}
@@ -334,7 +455,7 @@ export default function RecordScreen({ route, navigation }: Props) {
       {phase === "uploaded" ? (
         <Pressable
           style={styles.buttonGhost}
-          onPress={() => navigation.popToTop()}
+          onPress={onDone}
         >
           <Text style={styles.buttonGhostText}>Done</Text>
         </Pressable>
