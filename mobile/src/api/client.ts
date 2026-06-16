@@ -3,9 +3,25 @@ import { API_BASE_URL } from "../config";
 
 const TOKEN_KEY = "multimic.token";
 // A no-account guest receives this opaque token when joining a session. The phone
-// persists it and reuses it for status polling, uploads and upload RETRIES so the
-// same device always maps to the same backend participant (no duplicate audio).
-const GUEST_TOKEN_KEY = "multimic.guest_token";
+// persists it (bound to the session code) and reuses it for status polling, uploads
+// and upload RETRIES — and across app restarts — so the same device always maps to
+// the same backend participant (no duplicate audio).
+const GUEST_KEY = "multimic.guest";
+
+interface GuestCreds {
+  code: string;
+  token: string;
+}
+
+async function readGuest(): Promise<GuestCreds | null> {
+  const raw = await AsyncStorage.getItem(GUEST_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as GuestCreds;
+  } catch {
+    return null;
+  }
+}
 
 export async function getToken(): Promise<string | null> {
   return AsyncStorage.getItem(TOKEN_KEY);
@@ -19,16 +35,27 @@ export async function clearToken(): Promise<void> {
   await AsyncStorage.removeItem(TOKEN_KEY);
 }
 
+// The active guest token (used by uploads/status, which key off session id only).
 export async function getGuestToken(): Promise<string | null> {
-  return AsyncStorage.getItem(GUEST_TOKEN_KEY);
+  return (await readGuest())?.token ?? null;
 }
 
-export async function setGuestToken(token: string): Promise<void> {
-  await AsyncStorage.setItem(GUEST_TOKEN_KEY, token);
+// The guest token previously issued for THIS session code, if any. Sent on re-join
+// so a restarted app reconnects to its existing participant instead of duplicating.
+export async function getGuestTokenForCode(code: string): Promise<string | null> {
+  const g = await readGuest();
+  return g && g.code === code.toUpperCase() ? g.token : null;
+}
+
+async function setGuestToken(code: string, token: string): Promise<void> {
+  await AsyncStorage.setItem(
+    GUEST_KEY,
+    JSON.stringify({ code: code.toUpperCase(), token } satisfies GuestCreds),
+  );
 }
 
 export async function clearGuestToken(): Promise<void> {
-  await AsyncStorage.removeItem(GUEST_TOKEN_KEY);
+  await AsyncStorage.removeItem(GUEST_KEY);
 }
 
 // The credential to send on session/recording calls: a logged-in account token if
@@ -131,20 +158,30 @@ export const api = {
     speakerName: string,
     deviceName: string,
   ): Promise<JoinResult> {
+    const normCode = code.toUpperCase();
+    // Reconnect path: if this device already holds a guest token for this session
+    // (e.g. after an app restart or a dropped connection), send it so the backend
+    // returns the SAME participant instead of creating a duplicate phone.
+    const account = await getToken();
+    const reuseToken = account ? null : await getGuestTokenForCode(normCode);
+    const auth = account ?? reuseToken;
     const res = await fetch(`${API_BASE_URL}/sessions/join`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+      headers: {
+        "Content-Type": "application/json",
+        ...(auth ? { Authorization: `Bearer ${auth}` } : {}),
+      },
       body: JSON.stringify({
-        code,
+        code: normCode,
         speaker_name: speakerName,
         device_name: deviceName,
       }),
     });
     const result = await handle<JoinResult>(res);
-    // Persist the guest token so reconnects / upload retries reuse the SAME
-    // participant. Only stored when joining without an account.
+    // Persist the guest token (bound to this code) so reconnects / upload retries
+    // reuse the SAME participant. Only stored when joining without an account.
     if (result.guest_token) {
-      await setGuestToken(result.guest_token);
+      await setGuestToken(normCode, result.guest_token);
     }
     return result;
   },

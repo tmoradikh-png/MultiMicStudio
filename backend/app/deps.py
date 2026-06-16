@@ -33,23 +33,6 @@ def get_current_user(
     return user
 
 
-def get_optional_user(
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
-    db: Session = Depends(get_db),
-) -> User | None:
-    """Resolve a logged-in user if a valid account token is present, else None.
-
-    Used by endpoints that work for BOTH accounts and no-account guests (e.g.
-    joining a session). Never raises for the anonymous case.
-    """
-    if credentials is None:
-        return None
-    user_id = decode_token(credentials.credentials)
-    if user_id is None:
-        return None
-    return db.get(User, user_id)
-
-
 @dataclass
 class Principal:
     """The authenticated caller: either an account `user` or a guest `participant`."""
@@ -72,10 +55,32 @@ def get_principal(
     looking the bearer value up as a guest token on a participant row. This lets a
     no-account phone authenticate using only the token it received when it joined.
     """
-    if credentials is None:
+    principal = _resolve_optional_principal(credentials, db)
+    if principal is None:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated"
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token"
         )
+    return principal
+
+
+def get_optional_principal(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    db: Session = Depends(get_db),
+) -> Principal | None:
+    """Resolve an account user OR a guest participant, or None when unauthenticated.
+
+    Used by /sessions/join so the SAME endpoint serves brand-new guests (no token),
+    reconnecting guests (existing guest token), and logged-in users. Never raises.
+    """
+    return _resolve_optional_principal(credentials, db)
+
+
+def _resolve_optional_principal(
+    credentials: HTTPAuthorizationCredentials | None,
+    db: Session,
+) -> Principal | None:
+    if credentials is None:
+        return None
     token = credentials.credentials
 
     user_id = decode_token(token)
@@ -92,7 +97,6 @@ def get_principal(
     if participant is not None:
         return Principal(user=None, participant=participant)
 
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token"
-    )
+    return None
+
 

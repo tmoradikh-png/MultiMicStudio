@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import generate_guest_token
 from app.database import get_db
-from app.deps import Principal, get_current_user, get_optional_user, get_principal
+from app.deps import Principal, get_current_user, get_optional_principal, get_principal
 from app.models import (
     RecordingSession,
     SessionParticipant,
@@ -77,7 +77,7 @@ def create_session(
 def join_session(
     payload: SessionJoin,
     db: Session = Depends(get_db),
-    user: User | None = Depends(get_optional_user),
+    principal: Principal | None = Depends(get_optional_principal),
 ) -> JoinResult:
     """Join a session as an account holder OR as a no-account guest.
 
@@ -85,6 +85,10 @@ def join_session(
     Otherwise an anonymous guest participant is created and issued a `guest_token`
     the phone stores and reuses for reconnects / upload retries (so the same device
     always maps to the same participant and never duplicates audio in the mix).
+
+    Reconnect: if the caller presents a guest token that already belongs to THIS
+    session, the existing participant is returned unchanged (same token) instead of
+    creating a duplicate — this is what makes an app restart safe.
     """
     session = (
         db.query(RecordingSession)
@@ -93,9 +97,23 @@ def join_session(
     )
     if session is None:
         raise HTTPException(status_code=404, detail="Invalid session code")
+
+    # A returning guest whose token is bound to THIS session simply reconnects.
+    if (
+        principal is not None
+        and principal.is_guest
+        and principal.participant.session_id == session.id
+    ):
+        return JoinResult(
+            session=session,
+            participant=principal.participant,
+            guest_token=principal.participant.guest_token,
+        )
+
     if session.status in (SessionStatus.ended, SessionStatus.ready, SessionStatus.processing):
         raise HTTPException(status_code=409, detail="Session is no longer open to join")
 
+    user = principal.user if principal is not None else None
     name = (payload.speaker_name or "").strip()
     if not name:
         name = user.name if user is not None else f"Guest {len(session.participants) + 1}"

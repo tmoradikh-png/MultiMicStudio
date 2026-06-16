@@ -467,7 +467,21 @@ def _test_guest_no_account_flow(client: TestClient, host_headers: dict) -> None:
     headers_a = {"Authorization": f"Bearer {token_a}"}
     headers_b = {"Authorization": f"Bearer {token_b}"}
 
-    # A guest token authorizes status polling; junk / missing tokens are rejected.
+    # Reconnect (app restart): re-joining with the SAME token returns the SAME
+    # participant and token — no duplicate phone is created.
+    r = client.post(
+        "/sessions/join",
+        json={"code": code, "speaker_name": "Phone A"},
+        headers=headers_a,
+    )
+    assert r.status_code == 200, r.text
+    reconnect = r.json()
+    assert reconnect["participant"]["id"] == part_a, "reconnect made a new participant"
+    assert reconnect["guest_token"] == token_a, "reconnect changed the guest token"
+    r = client.get(f"/sessions/{session_id}", headers=host_headers)
+    guest_count = sum(1 for p in r.json()["participants"] if p["speaker_name"].startswith("Phone"))
+    assert guest_count == 2, f"reconnect duplicated a phone (have {guest_count} guests)"
+
     assert client.get(f"/sessions/{session_id}/status", headers=headers_a).status_code == 200
     assert client.get(f"/sessions/{session_id}/status").status_code == 401
     assert (
@@ -538,6 +552,7 @@ def _test_guest_no_account_flow(client: TestClient, host_headers: dict) -> None:
     print("GUEST NO-ACCOUNT FLOW TEST PASSED")
     print("  2 phones joined by code (no login), each got its own token;")
     print("  retry deduped to 1 recording/guest; cross-guest upload blocked.")
+    print("  restart/reconnect with same token reused the same participant.")
 
 
 if __name__ == "__main__":
