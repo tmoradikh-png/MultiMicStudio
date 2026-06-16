@@ -19,7 +19,7 @@ export default function JoinSessionScreen({ navigation }: Props) {
     try {
       const result = await api.joinSession(
         code.trim().toUpperCase(),
-        speakerName.trim() || "Speaker",
+        speakerName.trim(),
         "mobile",
       );
       navigation.replace("Record", {
@@ -53,7 +53,7 @@ export default function JoinSessionScreen({ navigation }: Props) {
       <TextInput
         style={styles.input}
         placeholderTextColor={colors.muted}
-        placeholder="e.g. Sara"
+        placeholder="e.g. Sara (optional)"
         value={speakerName}
         onChangeText={setSpeakerName}
       />

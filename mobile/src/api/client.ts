@@ -2,6 +2,10 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { API_BASE_URL } from "../config";
 
 const TOKEN_KEY = "multimic.token";
+// A no-account guest receives this opaque token when joining a session. The phone
+// persists it and reuses it for status polling, uploads and upload RETRIES so the
+// same device always maps to the same backend participant (no duplicate audio).
+const GUEST_TOKEN_KEY = "multimic.guest_token";
 
 export async function getToken(): Promise<string | null> {
   return AsyncStorage.getItem(TOKEN_KEY);
@@ -15,8 +19,27 @@ export async function clearToken(): Promise<void> {
   await AsyncStorage.removeItem(TOKEN_KEY);
 }
 
+export async function getGuestToken(): Promise<string | null> {
+  return AsyncStorage.getItem(GUEST_TOKEN_KEY);
+}
+
+export async function setGuestToken(token: string): Promise<void> {
+  await AsyncStorage.setItem(GUEST_TOKEN_KEY, token);
+}
+
+export async function clearGuestToken(): Promise<void> {
+  await AsyncStorage.removeItem(GUEST_TOKEN_KEY);
+}
+
+// The credential to send on session/recording calls: a logged-in account token if
+// present, otherwise the stored guest token. This is what lets a no-account phone
+// authenticate using only the token it got when it joined.
+export async function getAuthToken(): Promise<string | null> {
+  return (await getToken()) ?? (await getGuestToken());
+}
+
 async function authHeaders(): Promise<Record<string, string>> {
-  const token = await getToken();
+  const token = await getAuthToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
@@ -63,6 +86,8 @@ export interface SessionData {
 export interface JoinResult {
   session: SessionData;
   participant: Participant;
+  // Present only for no-account guests; null when a logged-in user joins.
+  guest_token: string | null;
 }
 
 export interface SessionStatus {
@@ -115,7 +140,13 @@ export const api = {
         device_name: deviceName,
       }),
     });
-    return handle<JoinResult>(res);
+    const result = await handle<JoinResult>(res);
+    // Persist the guest token so reconnects / upload retries reuse the SAME
+    // participant. Only stored when joining without an account.
+    if (result.guest_token) {
+      await setGuestToken(result.guest_token);
+    }
+    return result;
   },
 
   async getSession(id: string): Promise<SessionData> {

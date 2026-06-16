@@ -112,6 +112,14 @@ class SessionParticipant(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"))
     user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    # Anonymous device identity for guests who join WITHOUT an account. The phone
+    # stores this token and re-sends it on reconnect / upload retry, so the same
+    # physical device always maps to the SAME participant — which is what stops a
+    # retried upload from adding a duplicate, stacked copy to the final mix.
+    # NULL for account-based participants (e.g. the host).
+    guest_token: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, unique=True, index=True
+    )
     device_name: Mapped[str] = mapped_column(String(255), default="")
     speaker_name: Mapped[str] = mapped_column(String(255))
     role: Mapped[ParticipantRole] = mapped_column(

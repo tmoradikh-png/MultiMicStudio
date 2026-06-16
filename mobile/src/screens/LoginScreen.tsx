@@ -72,6 +72,14 @@ export default function LoginScreen({ navigation }: Props) {
       >
         <Text style={styles.buttonGhostText}>Create a new account</Text>
       </Pressable>
+      <Pressable
+        style={styles.buttonGhost}
+        onPress={() => navigation.navigate("JoinSession")}
+      >
+        <Text style={styles.buttonGhostText}>
+          Join a session as guest (no account)
+        </Text>
+      </Pressable>
     </KeyboardAvoidingView>
   );
 }

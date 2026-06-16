@@ -3,10 +3,21 @@ from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
+import secrets
 
 from app.config import get_settings
 
 settings = get_settings()
+
+
+def generate_guest_token() -> str:
+    """Opaque, unguessable identity for a no-account guest device.
+
+    Unlike the host's JWT, this is a random bearer token persisted on the
+    participant row. The phone stores it and re-sends it on reconnect / upload
+    retry so the same device always resolves to the SAME participant.
+    """
+    return secrets.token_urlsafe(32)
 
 # bcrypt operates on bytes and ignores input beyond 72 bytes; truncate defensively.
 def _to_bytes(value: str) -> bytes:

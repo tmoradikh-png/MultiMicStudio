@@ -7,8 +7,9 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.auth import generate_guest_token
 from app.database import get_db
-from app.deps import get_current_user
+from app.deps import Principal, get_current_user, get_optional_user, get_principal
 from app.models import (
     RecordingSession,
     SessionParticipant,
@@ -76,8 +77,15 @@ def create_session(
 def join_session(
     payload: SessionJoin,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User | None = Depends(get_optional_user),
 ) -> JoinResult:
+    """Join a session as an account holder OR as a no-account guest.
+
+    If a valid account token is present the participant is linked to that user.
+    Otherwise an anonymous guest participant is created and issued a `guest_token`
+    the phone stores and reuses for reconnects / upload retries (so the same device
+    always maps to the same participant and never duplicates audio in the mix).
+    """
     session = (
         db.query(RecordingSession)
         .filter(RecordingSession.code == payload.code.upper())
@@ -88,10 +96,16 @@ def join_session(
     if session.status in (SessionStatus.ended, SessionStatus.ready, SessionStatus.processing):
         raise HTTPException(status_code=409, detail="Session is no longer open to join")
 
+    name = (payload.speaker_name or "").strip()
+    if not name:
+        name = user.name if user is not None else f"Guest {len(session.participants) + 1}"
+
+    guest_token = None if user is not None else generate_guest_token()
     participant = SessionParticipant(
         session_id=session.id,
-        user_id=user.id,
-        speaker_name=payload.speaker_name,
+        user_id=user.id if user is not None else None,
+        guest_token=guest_token,
+        speaker_name=name,
         device_name=payload.device_name,
         role=payload.role,
     )
@@ -99,7 +113,7 @@ def join_session(
     db.commit()
     db.refresh(session)
     db.refresh(participant)
-    return JoinResult(session=session, participant=participant)
+    return JoinResult(session=session, participant=participant, guest_token=guest_token)
 
 
 @router.get("", response_model=list[SessionOut])
@@ -127,9 +141,9 @@ def get_session(
 def get_session_status(
     session_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_principal),
 ) -> RecordingSession:
-    """Lightweight status poll usable by ANY participant (not just the owner).
+    """Lightweight status poll usable by ANY participant (owner, account, or guest).
 
     Joined phones poll this so they can auto-start/stop when the host does, without
     each phone pressing its own button.
@@ -137,9 +151,13 @@ def get_session_status(
     session = db.get(RecordingSession, session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    is_member = session.owner_user_id == user.id or any(
-        p.user_id == user.id for p in session.participants
-    )
+    if principal.is_guest:
+        is_member = principal.participant.session_id == session_id
+    else:
+        user = principal.user
+        is_member = session.owner_user_id == user.id or any(
+            p.user_id == user.id for p in session.participants
+        )
     if not is_member:
         raise HTTPException(status_code=403, detail="Not a participant of this session")
     return session

@@ -83,6 +83,18 @@ function Routes() {
             component={SignupScreen}
             options={{ headerShown: false }}
           />
+          {/* No-account guests can join a host's session by code and record,
+              without ever creating an account. */}
+          <Stack.Screen
+            name="JoinSession"
+            component={JoinSessionScreen}
+            options={{ title: "Join as guest" }}
+          />
+          <Stack.Screen
+            name="Record"
+            component={RecordScreen}
+            options={{ title: "Recording", headerBackVisible: false }}
+          />
         </>
       )}
     </Stack.Navigator>

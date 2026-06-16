@@ -108,6 +108,7 @@ def _run(client: TestClient) -> None:
     print("  transcript:", project["transcript_text"][:80], "...")
 
     _test_single_phone_and_dedup(client, headers)
+    _test_guest_no_account_flow(client, headers)
 
 
 def _wav_duration_seconds(content: bytes) -> float:
@@ -423,6 +424,120 @@ def _test_enhancement_presets() -> None:
 
     print("ENHANCEMENT PRESETS TEST PASSED")
     print(f"  modes={list(effects.ENHANCEMENT_MODES)} preserve length + stereo")
+
+
+def _test_guest_no_account_flow(client: TestClient, host_headers: dict) -> None:
+    """No-account guests join a host's session, poll, upload, retry — no duplicates.
+
+    Covers the private-beta requirement that phones can join with only a code/QR:
+      * each guest gets its OWN anonymous guest_token (device identity),
+      * the token alone authorizes status polling + upload (no login),
+      * an upload retry with the same token reuses the same participant, so the
+        mix is deduped to one recording per guest (no stacked/duplicate audio),
+      * a guest cannot upload for another guest's participant,
+      * the host still sees every guest in the participant list.
+    """
+    from app.database import SessionLocal
+    from app.worker.tasks import _select_input_recordings
+
+    # Host (logged-in) creates the session everyone joins by code.
+    r = client.post("/sessions", json={"title": "Guest session"}, headers=host_headers)
+    assert r.status_code == 201, r.text
+    session = r.json()
+    session_id = session["id"]
+    code = session["code"]
+
+    # Two phones join with NO Authorization header at all.
+    def join_guest(name: str) -> dict:
+        r = client.post("/sessions/join", json={"code": code, "speaker_name": name})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["guest_token"], "guest join did not return a guest_token"
+        return body
+
+    guest_a = join_guest("Phone A")
+    guest_b = join_guest("Phone B")
+    token_a = guest_a["guest_token"]
+    token_b = guest_b["guest_token"]
+    part_a = guest_a["participant"]["id"]
+    part_b = guest_b["participant"]["id"]
+    assert token_a != token_b, "two guests must get distinct tokens"
+    assert part_a != part_b, "two guests must be distinct participants"
+
+    headers_a = {"Authorization": f"Bearer {token_a}"}
+    headers_b = {"Authorization": f"Bearer {token_b}"}
+
+    # A guest token authorizes status polling; junk / missing tokens are rejected.
+    assert client.get(f"/sessions/{session_id}/status", headers=headers_a).status_code == 200
+    assert client.get(f"/sessions/{session_id}/status").status_code == 401
+    assert (
+        client.get(
+            f"/sessions/{session_id}/status",
+            headers={"Authorization": "Bearer not-a-real-token"},
+        ).status_code
+        == 401
+    )
+
+    # Host starts the take; guests then upload using only their guest token.
+    r = client.post(f"/sessions/{session_id}/start", headers=host_headers)
+    assert r.status_code == 200, r.text
+    take_id = r.json()["current_take_id"]
+
+    length = 4.0
+    wav_a = make_wav(clap_at_s=0.5, length_s=length, seed=31)
+    wav_b = make_wav(clap_at_s=0.9, length_s=length, seed=32)
+
+    # Guest A uploads, then RETRIES the same upload (same token) — both succeed.
+    _upload(client, headers_a, session_id, part_a, take_id, wav_a, length)
+    _upload(client, headers_a, session_id, part_a, take_id, wav_a, length)
+    # Guest B uploads once.
+    _upload(client, headers_b, session_id, part_b, take_id, wav_b, length)
+
+    # A guest may NOT upload for another guest's participant.
+    r = client.post(
+        "/recordings",
+        data={
+            "session_id": session_id,
+            "participant_id": part_b,  # B's participant
+            "take_id": take_id,
+            "sample_rate": str(SR),
+            "duration_seconds": str(length),
+        },
+        files={"file": ("x.wav", wav_a, "audio/wav")},
+        headers=headers_a,  # but using A's token
+    )
+    assert r.status_code == 403, f"cross-guest upload should be forbidden, got {r.status_code}"
+
+    # Dedup: despite A's retry, selection is exactly one recording per guest.
+    db = SessionLocal()
+    try:
+        selected = _select_input_recordings(db, session_id)
+    finally:
+        db.close()
+    assert len(selected) == 2, (
+        f"expected 2 inputs (one per guest), got {len(selected)} — retry was not deduped"
+    )
+
+    # Host can see both guests in the participant list (plus the host record).
+    r = client.get(f"/sessions/{session_id}", headers=host_headers)
+    assert r.status_code == 200, r.text
+    names = {p["speaker_name"] for p in r.json()["participants"]}
+    assert {"Phone A", "Phone B"}.issubset(names), names
+
+    # Process and confirm the mix is one take's length (no duplicate/stacked audio).
+    client.post(f"/sessions/{session_id}/stop", headers=host_headers)
+    r = client.post(f"/projects/process/{session_id}", headers=host_headers)
+    assert r.status_code == 202, r.text
+    project = client.get(f"/projects/{session_id}", headers=host_headers).json()
+    assert project["processing_status"] == "done", project
+    mixed_dur = _wav_duration_seconds(client.get(project["final_audio_url"]).content)
+    assert length - 0.2 <= mixed_dur <= length + 1.0, (
+        f"guest mix {mixed_dur:.2f}s outside expected ~{length:.2f}s (duplication?)"
+    )
+
+    print("GUEST NO-ACCOUNT FLOW TEST PASSED")
+    print("  2 phones joined by code (no login), each got its own token;")
+    print("  retry deduped to 1 recording/guest; cross-guest upload blocked.")
 
 
 if __name__ == "__main__":

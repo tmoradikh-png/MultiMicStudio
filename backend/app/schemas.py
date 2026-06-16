@@ -45,7 +45,9 @@ class SessionCreate(BaseModel):
 
 class SessionJoin(BaseModel):
     code: str
-    speaker_name: str
+    # Optional display label only. Guests need no account, so a name is not required;
+    # the backend assigns "Guest N" when omitted.
+    speaker_name: str = ""
     device_name: str = ""
     role: ParticipantRole = ParticipantRole.speaker_mic
 
@@ -85,6 +87,9 @@ class SessionStatusOut(BaseModel):
 class JoinResult(BaseModel):
     session: SessionOut
     participant: ParticipantOut
+    # Set only when a no-account guest joins. The phone MUST store this and re-send it
+    # (as a Bearer token) for status polling and upload retries. Null for logged-in users.
+    guest_token: str | None = None
 
 
 # --- Recordings ---

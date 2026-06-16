@@ -49,6 +49,7 @@ def _ensure_columns() -> None:
     wanted: dict[str, dict[str, str]] = {
         "sessions": {"current_take_id": "VARCHAR(36)"},
         "recordings": {"take_id": "VARCHAR(36)"},
+        "session_participants": {"guest_token": "VARCHAR(64)"},
         "processed_projects": {
             "final_audio_stereo_url": "VARCHAR(1024)",
             "final_audio_enhanced_url": "VARCHAR(1024)",

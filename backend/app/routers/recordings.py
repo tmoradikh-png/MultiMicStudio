@@ -16,7 +16,7 @@ from fastapi import (
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.deps import get_current_user
+from app.deps import Principal, get_current_user, get_principal
 from app.models import (
     Recording,
     RecordingSession,
@@ -40,7 +40,7 @@ def upload_recording(
     duration_seconds: float | None = Form(None),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_principal),
 ) -> Recording:
     session = db.get(RecordingSession, session_id)
     if session is None:
@@ -49,8 +49,14 @@ def upload_recording(
     participant = db.get(SessionParticipant, participant_id)
     if participant is None or participant.session_id != session_id:
         raise HTTPException(status_code=404, detail="Participant not in this session")
-    # A participant may only upload for their own join (or the owner for any).
-    if participant.user_id != user.id and session.owner_user_id != user.id:
+    # Authorization: a guest may only upload for its OWN participant; an account user
+    # may upload for their own join, and the owner may upload for any participant.
+    if principal.is_guest:
+        allowed = principal.participant.id == participant_id
+    else:
+        user = principal.user
+        allowed = participant.user_id == user.id or session.owner_user_id == user.id
+    if not allowed:
         raise HTTPException(status_code=403, detail="Not allowed to upload here")
 
     # Tie the upload to a take: trust the client value, else fall back to the

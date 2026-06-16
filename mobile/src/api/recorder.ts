@@ -5,7 +5,7 @@ import { Audio } from "expo-av";
 // "Stop & upload" silently failed before any request was sent.
 import * as FileSystem from "expo-file-system/legacy";
 import { API_BASE_URL } from "../config";
-import { getToken } from "./client";
+import { getAuthToken } from "./client";
 
 // One phone per speaker: record locally at high quality, keep a local backup,
 // then upload with retry. Mirrors the MVP recording flow in the spec.
@@ -166,7 +166,7 @@ export async function uploadRecording(
   rec: FinishedRecording,
   maxRetries = 3,
 ): Promise<void> {
-  const token = await getToken();
+  const token = await getAuthToken();
   const fileInfo = await FileSystem.getInfoAsync(rec.uri);
   if (!fileInfo.exists) throw new Error("Local recording file missing");
 
