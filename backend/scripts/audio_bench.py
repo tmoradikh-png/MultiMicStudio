@@ -34,6 +34,7 @@ import base64
 import datetime as _dt
 import html
 import io
+import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -641,6 +642,217 @@ def run_checks(
 
 
 # --------------------------------------------------------------------------- #
+# Baseline guard + plain-language comparison summary
+# --------------------------------------------------------------------------- #
+_BASELINE_PATH = Path(__file__).resolve().parent / "audio_baseline.json"
+
+
+def load_baseline(path: Path | None = None) -> dict | None:
+    """Load the frozen minimum-quality bar (audio_baseline.json), or None.
+
+    The bench still runs without it; baseline comparison is simply skipped.
+    """
+    p = path or _BASELINE_PATH
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ! baseline not loaded ({p.name}): {exc}")
+        return None
+
+
+def check_baseline(
+    metrics: dict[str, ClipMetrics],
+    raw_offset_ms: float | None,
+    drift_ms: float | None,
+    baseline: dict | None,
+) -> list[Check]:
+    """Compare the measured metrics against the frozen baseline thresholds.
+
+    Returns one Check per guarded metric. A FAIL here means a regression below the
+    saved working baseline (git tag v0.1.0-audio-baseline). Read-only: no audio is
+    altered. Metrics/clips that are absent are simply not checked.
+    """
+    out: list[Check] = []
+    if not baseline:
+        return out
+
+    natural = metrics.get("natural")
+    ns = baseline.get("natural_stereo", {})
+    if natural is not None and ns:
+        st = natural.stereo
+        out.append(Check(
+            "Baseline · natural pan range",
+            st["pan_range"] >= ns["pan_range_min"],
+            f"{st['pan_range']:.2f} (>= {ns['pan_range_min']})",
+        ))
+        out.append(Check(
+            "Baseline · natural L/R correlation (not mono)",
+            st["correlation"] <= ns["lr_correlation_max"],
+            f"{st['correlation']:.3f} (<= {ns['lr_correlation_max']})",
+        ))
+        out.append(Check(
+            "Baseline · natural L/R balance",
+            abs(st["balance_db"]) <= ns["lr_balance_abs_db_max"],
+            f"{st['balance_db']:+.2f} dB (|x| <= {ns['lr_balance_abs_db_max']})",
+        ))
+        out.append(Check(
+            "Baseline · natural SNR",
+            natural.snr_db >= ns["snr_db_min"],
+            f"{natural.snr_db:.1f} dB (>= {ns['snr_db_min']})",
+        ))
+        out.append(Check(
+            "Baseline · natural peak headroom",
+            ns["peak_dbfs_min"] <= natural.peak_db <= ns["peak_dbfs_max"],
+            f"{natural.peak_db:.1f} dBFS (in [{ns['peak_dbfs_min']}, {ns['peak_dbfs_max']}])",
+        ))
+        out.append(Check(
+            "Baseline · natural no clipping",
+            natural.clip_count <= ns["clip_count_max"],
+            f"{natural.clip_count} clipped samples (<= {ns['clip_count_max']})",
+        ))
+
+    dup = baseline.get("duplicate", {})
+    if natural is not None and dup:
+        out.append(Check(
+            "Baseline · natural no duplicate/stacked audio",
+            natural.dup_prominence <= dup["dup_prominence_max"],
+            f"prominence {natural.dup_prominence:.2f} (<= {dup['dup_prominence_max']})",
+        ))
+
+    studio = metrics.get("studio_voice")
+    sv = baseline.get("studio_voice", {})
+    if studio is not None and sv:
+        out.append(Check(
+            "Baseline · Studio Voice SNR",
+            studio.snr_db >= sv["snr_db_min"],
+            f"{studio.snr_db:.1f} dB (>= {sv['snr_db_min']})",
+        ))
+        out.append(Check(
+            "Baseline · Studio Voice keeps stereo",
+            studio.stereo["correlation"] <= sv["keep_stereo_correlation_max"],
+            f"corr {studio.stereo['correlation']:.3f} (<= {sv['keep_stereo_correlation_max']})",
+        ))
+        if natural is not None:
+            limit = natural.reverb_sustain + sv["reverb_sustain_over_natural_max"]
+            out.append(Check(
+                "Baseline · Studio Voice adds no reverb",
+                studio.reverb_sustain <= limit,
+                f"sustain {studio.reverb_sustain:.2f} (<= natural + "
+                f"{sv['reverb_sustain_over_natural_max']} = {limit:.2f})",
+            ))
+
+    sync = baseline.get("sync", {})
+    if raw_offset_ms is not None and sync:
+        out.append(Check(
+            "Baseline · raw sync offset",
+            raw_offset_ms <= sync["raw_offset_ms_max"],
+            f"{raw_offset_ms:.0f} ms (<= {sync['raw_offset_ms_max']})",
+        ))
+    if drift_ms is not None and sync:
+        out.append(Check(
+            "Baseline · drift over time",
+            abs(drift_ms) <= sync["drift_ms_max"],
+            f"{drift_ms:.1f} ms (<= {sync['drift_ms_max']})",
+        ))
+
+    return out
+
+
+def build_summary(
+    metrics: dict[str, ClipMetrics],
+    checks: list[Check],
+    baseline_checks: list[Check],
+) -> list[tuple[str, str, str, bool]]:
+    """Plain-language answers shown at the very top of the report.
+
+    Each item is (question, answer, detail, is_good) where answer is
+    "Yes" / "No" / "—" and is_good marks whether the answer is the healthy one
+    (so the UI can colour it green/red). Designed so a non-technical reader can
+    judge the recording at a glance.
+    """
+    items: list[tuple[str, str, str, bool]] = []
+
+    def yn(v: bool) -> str:
+        return "Yes" if v else "No"
+
+    natural = metrics.get("natural")
+    raw = next((m for m in metrics.values() if m.role == "raw"), None)
+    studio = metrics.get("studio_voice")
+
+    # Q1 — Is natural better than one phone?
+    if natural is not None and raw is not None:
+        better = (
+            natural.stereo["pan_range"] > raw.stereo["pan_range"]
+            and natural.stereo["correlation"] < 0.985
+        )
+        items.append((
+            "Is natural stereo better than one phone?",
+            yn(better),
+            f"pan range {natural.stereo['pan_range']:.2f} vs single-phone "
+            f"{raw.stereo['pan_range']:.2f}; correlation {natural.stereo['correlation']:.3f}",
+            better,
+        ))
+    elif natural is not None:
+        items.append((
+            "Is natural stereo better than one phone?",
+            "—",
+            "attach a single raw phone to compare",
+            True,
+        ))
+
+    # Q2 — Is Studio Voice cleaner than natural?
+    if studio is not None and natural is not None:
+        cleaner = studio.snr_db >= natural.snr_db
+        items.append((
+            "Is Studio Voice cleaner than natural?",
+            yn(cleaner),
+            f"SNR {studio.snr_db:.1f} dB vs natural {natural.snr_db:.1f} dB; "
+            f"noise floor {studio.noise_db:.1f} vs {natural.noise_db:.1f} dB",
+            cleaner,
+        ))
+
+    # Q3 — Is sync acceptable?  (driven by the baseline sync checks)
+    sync_checks = [c for c in baseline_checks if c.name.startswith("Baseline · raw sync")
+                   or c.name.startswith("Baseline · drift")]
+    if sync_checks:
+        ok = all(c.passed for c in sync_checks)
+        items.append((
+            "Is sync acceptable?",
+            yn(ok),
+            "; ".join(c.detail for c in sync_checks),
+            ok,
+        ))
+
+    # Q4 — Did anything fall below the saved baseline?
+    if baseline_checks:
+        n_below = sum(1 for c in baseline_checks if not c.passed)
+        names = ", ".join(
+            c.name.replace("Baseline · ", "") for c in baseline_checks if not c.passed
+        )
+        items.append((
+            "Did anything fall below the saved baseline?",
+            yn(n_below > 0),  # "Yes" here is the BAD answer
+            f"{n_below} of {len(baseline_checks)} baseline checks regressed"
+            + (f": {names}" if names else ""),
+            n_below == 0,  # good when nothing regressed
+        ))
+
+    # Q5 — Is this recording usable for a demo?
+    # Usable = natural present, no failed functional checks, no baseline regressions.
+    func_fail = sum(1 for c in checks if not c.passed)
+    base_fail = sum(1 for c in baseline_checks if not c.passed)
+    usable = natural is not None and func_fail == 0 and base_fail == 0
+    items.append((
+        "Is this recording usable for a demo?",
+        yn(usable),
+        f"{func_fail} functional check(s) failed, {base_fail} baseline check(s) regressed",
+        usable,
+    ))
+
+    return items
+
+
+# --------------------------------------------------------------------------- #
 # HTML report
 # --------------------------------------------------------------------------- #
 def _fmt(v, suffix="", nd=1):
@@ -657,7 +869,11 @@ def build_html(
     images: dict[str, str],
     exports: list[str],
     title: str,
+    summary: list[tuple[str, str, str, bool]] | None = None,
+    baseline_checks: list[Check] | None = None,
 ) -> str:
+    summary = summary or []
+    baseline_checks = baseline_checks or []
     rows = []
     for m in metrics.values():
         st = m.stereo
@@ -707,6 +923,49 @@ def build_html(
         else f'<span class="fail">{n_fail} CHECK(S) FAILED</span>'
     )
 
+    # Comparison summary cards (plain-language Yes/No at the very top).
+    summary_cards = []
+    for question, answer, detail, is_good in summary:
+        cls = "card good" if is_good else "card bad"
+        ans_cls = "ans ok" if is_good else "ans fail"
+        summary_cards.append(
+            f'<div class="{cls}"><div class="q">{html.escape(question)}</div>'
+            f'<div class="{ans_cls}">{html.escape(answer)}</div>'
+            f'<div class="d">{html.escape(detail)}</div></div>'
+        )
+    summary_html = "\n".join(summary_cards)
+
+    # Baseline regression block.
+    n_base_fail = sum(1 for c in baseline_checks if not c.passed)
+    if baseline_checks:
+        base_verdict = (
+            '<span class="ok">AT OR ABOVE BASELINE</span>'
+            if n_base_fail == 0
+            else f'<span class="fail">{n_base_fail} BELOW BASELINE</span>'
+        )
+        base_rows = []
+        for c in baseline_checks:
+            badge = (
+                '<span class="ok">PASS</span>' if c.passed
+                else '<span class="fail">FAIL</span>'
+            )
+            base_rows.append(
+                f"<tr><td>{badge}</td><td>{html.escape(c.name)}</td>"
+                f"<td>{html.escape(c.detail)}</td></tr>"
+            )
+        baseline_section = (
+            f'<h2>Baseline guard <span style="font-weight:400;font-size:12px;">'
+            f"(vs frozen v0.1.0-audio-baseline)</span></h2>"
+            f'<p class="verdict">{base_verdict}</p>'
+            "<table><tr><th>Result</th><th>Baseline check</th><th>Detail</th></tr>"
+            f"{chr(10).join(base_rows)}</table>"
+        )
+    else:
+        baseline_section = (
+            '<h2>Baseline guard</h2><p>No <code>audio_baseline.json</code> loaded — '
+            "baseline comparison skipped.</p>"
+        )
+
     export_list = "\n".join(
         f"<li><code>{html.escape(e)}</code></li>" for e in exports
     )
@@ -732,11 +991,25 @@ def build_html(
  figcaption{{font-size:12px;color:#555;}}
  code{{background:#f4f4f4;padding:1px 4px;border-radius:3px;}}
  .verdict{{font-size:16px;margin:8px 0 16px;}}
+ .cards{{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0 8px;}}
+ .card{{flex:1 1 220px;border:1px solid #ddd;border-radius:8px;padding:12px 14px;
+   border-left-width:6px;background:#fafafa;}}
+ .card.good{{border-left-color:#0a7a23;}} .card.bad{{border-left-color:#b00020;}}
+ .card .q{{font-size:12px;color:#444;margin-bottom:4px;}}
+ .card .ans{{font-size:24px;font-weight:800;line-height:1;margin:2px 0 6px;}}
+ .card .d{{font-size:11px;color:#666;}}
 </style></head><body>
 <h1>{html.escape(title)}</h1>
 <p class="verdict">Verdict: {verdict}</p>
 <p>Generated {_dt.datetime.now().isoformat(timespec='seconds')}.
 LUFS {'enabled' if _HAVE_PYLN else 'unavailable (install pyloudnorm)'}.</p>
+
+<h2>Comparison summary</h2>
+<div class="cards">
+{summary_html}
+</div>
+
+{baseline_section}
 
 <h2>Pass / fail checks</h2>
 <table><tr><th>Result</th><th>Check</th><th>Detail</th></tr>
@@ -870,11 +1143,18 @@ def build_report(
     }
 
     checks = run_checks(metrics, raw_offset_ms, drift_ms)
-    report = build_html(metrics, checks, images, exports, title)
+    baseline = load_baseline()
+    baseline_checks = check_baseline(metrics, raw_offset_ms, drift_ms, baseline)
+    summary = build_summary(metrics, checks, baseline_checks)
+    report = build_html(
+        metrics, checks, images, exports, title,
+        summary=summary, baseline_checks=baseline_checks,
+    )
     report_path = out_dir / "report.html"
     report_path.write_text(report, encoding="utf-8")
 
     n_fail = sum(1 for c in checks if not c.passed)
+    n_base_fail = sum(1 for c in baseline_checks if not c.passed)
     return {
         "report_path": str(report_path.resolve()),
         "clips": [c.label for c in clips],
@@ -882,6 +1162,13 @@ def build_report(
         "checks_total": len(checks),
         "checks_failed": n_fail,
         "checks": [(c.passed, c.name, c.detail) for c in checks],
+        "baseline_total": len(baseline_checks),
+        "baseline_failed": n_base_fail,
+        "baseline_checks": [(c.passed, c.name, c.detail) for c in baseline_checks],
+        "summary": [
+            {"question": q, "answer": a, "detail": d, "good": g}
+            for (q, a, d, g) in summary
+        ],
     }
 
 
@@ -970,8 +1257,24 @@ def main() -> None:
 
     print(f"Wrote {len(result['exports'])} normalised A/B file(s).")
     print(f"\nReport: {result['report_path']}")
+
+    # Plain-language comparison summary first (the headline answers).
+    print("\nComparison summary:")
+    for item in result.get("summary", []):
+        print(f"  {item['answer']:>3}  {item['question']}")
+
+    # Baseline guard verdict.
+    if result.get("baseline_total", 0):
+        print(
+            f"\nBaseline guard: {result['baseline_total'] - result['baseline_failed']}"
+            f" at/above baseline, {result['baseline_failed']} below."
+        )
+        for passed, name, detail in result["baseline_checks"]:
+            if not passed:
+                print(f"  [BELOW] {name} — {detail}")
+
     print(
-        f"Checks: {result['checks_total'] - result['checks_failed']} passed, "
+        f"\nChecks: {result['checks_total'] - result['checks_failed']} passed, "
         f"{result['checks_failed']} failed."
     )
     for passed, name, detail in result["checks"]:
