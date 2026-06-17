@@ -8,6 +8,11 @@ sqlalchemy==2.0.34
 psycopg2-binary==2.9.9          # PostgreSQL driver (full product)
 # MVP can fall back to SQLite (built into Python) via DATABASE_URL
 
+# --- Object storage (only needed when STORAGE_BACKEND=s3) ---
+# Imported lazily by app/storage.py:S3Storage, so the local MVP never needs it.
+# Uncomment for hosted deployments on S3 / Cloudflare R2 / DO Spaces / MinIO.
+# boto3==1.35.24
+
 # --- Validation / settings ---
 pydantic==2.9.2
 pydantic-settings==2.5.2

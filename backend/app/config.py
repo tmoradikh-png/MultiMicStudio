@@ -16,14 +16,48 @@ class Settings(BaseSettings):
     storage_backend: str = "local"          # "local" | "s3"
     storage_local_dir: str = "./storage"
 
+    # --- Hosting / public addressing ---------------------------------------
+    # Absolute base URL the API is reachable at (e.g. "https://api.multimic.app").
+    # When set, stored file URLs are returned as absolute links so a real domain /
+    # CDN works. Empty keeps the relative "/files/..." behaviour the MVP uses.
+    public_base_url: str = ""
+
+    # --- Secure file URLs (opt-in; default OFF so the MVP is unchanged) -----
+    # When enabled, files are served via a signature-checked route instead of an
+    # open static mount, so audio is not world-enumerable on a hosted backend.
+    file_url_signing: bool = False
+    file_url_ttl_seconds: int = 3600        # signed-link lifetime
+    # Secret for HMAC link signatures; falls back to jwt_secret if left blank.
+    file_signing_secret: str = ""
+
+    # --- S3 / object storage (used only when storage_backend == "s3") ------
+    s3_bucket: str = ""
+    s3_region: str = ""
+    s3_endpoint_url: str = ""               # set for S3-compatible (R2/MinIO/Spaces)
+    s3_access_key_id: str = ""
+    s3_secret_access_key: str = ""
+    # Public base for objects (CDN/bucket URL). Empty => use presigned GET URLs.
+    s3_public_base_url: str = ""
+
     transcription_backend: str = "stub"     # "stub" | "faster-whisper"
     whisper_model: str = "base"
+
+    # --- Live Mode (FUTURE milestone; default OFF) -------------------------
+    # Feature flag seam only: when False the app is the offline record→upload→
+    # process→export product exactly as today. Real-time transport/worker are a
+    # separate milestone (see docs/ARCHITECTURE_HOSTING_AND_LIVE_MODE.md).
+    live_mode_enabled: bool = False
 
     cors_origins: str = "http://localhost:3000,http://localhost:19006"
 
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def signing_key(self) -> str:
+        """Secret used for HMAC file-URL signatures (dedicated, else JWT secret)."""
+        return self.file_signing_secret or self.jwt_secret
 
 
 @lru_cache

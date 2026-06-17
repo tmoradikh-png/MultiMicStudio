@@ -181,6 +181,19 @@ def _ensure_enhanced(storage, session_id: str, stereo_url: str, mode: str) -> st
             return storage.save(key, fh)
 
 
+def _present(storage, url: str | None) -> str | None:
+    """Convert a stored file URL into the link the client should fetch.
+
+    With the MVP defaults this returns the URL unchanged. On a hosted backend it
+    yields a signed/time-limited link (local signing) or a presigned object URL
+    (S3) — so the dashboard download/share links stay secure with no UI changes.
+    """
+    if not url:
+        return None
+    return storage.signed_url(key_to_relpath(url))
+
+
+
 @router.get("/{session_id}/outputs", response_model=ProjectOutputs)
 def get_project_outputs(
     session_id: str,
@@ -220,7 +233,7 @@ def get_project_outputs(
             OutputItem(
                 role=f"raw_phone_{i}",
                 label=f"Raw — {name}",
-                url=r.file_url,
+                url=_present(storage, r.file_url),
                 kind="raw",
                 available=bool(r.file_url),
             )
@@ -231,7 +244,7 @@ def get_project_outputs(
         OutputItem(
             role="natural_stereo",
             label="Natural stereo",
-            url=stereo_url,
+            url=_present(storage, stereo_url),
             kind="mix",
             available=bool(stereo_url),
         )
@@ -255,7 +268,7 @@ def get_project_outputs(
                 OutputItem(
                     role=mode,
                     label=label,
-                    url=url,
+                    url=_present(storage, url),
                     kind="mix",
                     available=bool(url),
                 )
@@ -275,7 +288,7 @@ def get_project_outputs(
         OutputItem(
             role="mono_downmix",
             label="Mono down-mix",
-            url=mono_url,
+            url=_present(storage, mono_url),
             kind="mix",
             available=bool(mono_url),
         )
