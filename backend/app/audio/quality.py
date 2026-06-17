@@ -12,8 +12,6 @@ import logging
 import sys
 from pathlib import Path
 
-from app.audio import processing
-
 logger = logging.getLogger("multimic.quality")
 
 _BENCH_PATH = Path(__file__).resolve().parents[2] / "scripts" / "audio_bench.py"
@@ -76,13 +74,11 @@ def evaluate(
         drift_ms = None
         raw_clips = [c for c in clips if c.role == "raw"]
         if len(raw_clips) >= 2:
-            tracks = [
-                processing.LoadedTrack(c.label, c.mono, c.sr, None)
-                for c in raw_clips[:2]
-            ]
-            offs = processing.compute_offsets(tracks)
-            vals = list(offs.values())
-            raw_offset_ms = abs(vals[0] - vals[1]) / raw_clips[0].sr * 1000.0
+            # Residual offset AFTER alignment (the raw start gap between phones is
+            # corrected automatically; what matters is the leftover sync error).
+            raw_offset_ms = bench.residual_offset_ms(
+                raw_clips[0].mono, raw_clips[1].mono, raw_clips[0].sr
+            )
             drift_ms = bench.estimate_drift_ms(
                 raw_clips[0].mono, raw_clips[1].mono, raw_clips[0].sr
             )
@@ -104,8 +100,8 @@ def evaluate(
             "baseline_failed": base_fail,
             "baseline_total": len(baseline_checks),
             "summary": [
-                {"question": q, "answer": a, "good": g}
-                for (q, a, _d, g) in summary
+                {"question": q, "answer": a, "detail": d, "good": g}
+                for (q, a, d, g) in summary
             ],
         }
     except Exception:  # noqa: BLE001  (badge is best-effort; never break the page)

@@ -152,7 +152,10 @@ export default function ProjectDetailPage() {
           <div className="row">
             <strong>Quality check</strong>
             <span className={`badge ${quality.ok ? "pass" : "fail"}`}>
-              {quality.passed}/{quality.total} passed
+              {quality.passed}/{quality.total} checks
+              {quality.baseline_failed
+                ? ` · ${quality.baseline_failed} below baseline`
+                : " · baseline OK"}
             </span>
           </div>
           <p className="subtitle" style={{ marginTop: 6 }}>
@@ -167,7 +170,12 @@ export default function ProjectDetailPage() {
                   <span className={`qa-mark ${s.good ? "good" : "bad"}`}>
                     {s.good ? "✓" : "!"}
                   </span>
-                  <span style={{ flex: 1 }}>{s.question}</span>
+                  <span className="qa-text">
+                    <span>{s.question}</span>
+                    {s.detail ? (
+                      <span className="qa-detail">{s.detail}</span>
+                    ) : null}
+                  </span>
                   <strong>{s.answer}</strong>
                 </li>
               ))}
@@ -199,7 +207,7 @@ export default function ProjectDetailPage() {
                 </div>
                 {url && o.available ? (
                   <>
-                    <audio controls preload="none" src={url} />
+                    <audio controls preload="metadata" src={url} />
                     <div className="output-actions" style={{ marginTop: 10 }}>
                       <a className="button ghost small" href={url} download>
                         Download

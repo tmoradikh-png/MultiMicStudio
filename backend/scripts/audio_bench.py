@@ -284,6 +284,41 @@ def estimate_drift_ms(a: np.ndarray, b: np.ndarray, sr: int) -> float | None:
     return (off1 - off0) / sr * 1000.0
 
 
+def residual_offset_ms(a: np.ndarray, b: np.ndarray, sr: int) -> float | None:
+    """Sync error that REMAINS after the engine aligns the two phones.
+
+    Two people never tap "record" at the same instant, so the raw start gap
+    between phones is routinely hundreds of ms to seconds. That gap is expected
+    and harmless: the alignment engine corrects it. What actually decides whether
+    the mix is in sync is how well the phones line up *after* that correction.
+
+    So we run the real aligner, apply its offsets, then measure the leftover
+    cross-correlation offset between the two tracks. ~0 ms means the output is
+    properly in sync (regardless of how far apart the phones started). Returns
+    ``None`` when the phones share too little common audio to judge.
+    """
+    if a is None or b is None or len(a) < sr or len(b) < sr:
+        return None
+    tracks = [
+        processing.LoadedTrack("a", a.astype(np.float32), sr, None),
+        processing.LoadedTrack("b", b.astype(np.float32), sr, None),
+    ]
+    offs = processing.compute_offsets(tracks)
+    oa = max(0, int(offs.get("a", 0)))
+    ob = max(0, int(offs.get("b", 0)))
+    a2 = np.concatenate([np.zeros(oa, dtype=np.float32), a.astype(np.float32)])
+    b2 = np.concatenate([np.zeros(ob, dtype=np.float32), b.astype(np.float32)])
+    n = min(len(a2), len(b2))
+    if n <= sr:
+        return None
+    resid, conf = processing.cross_correlation_offset_conf(
+        a2[:n], b2[:n], sr, max_lag_s=1.0
+    )
+    if conf < 0.05:
+        return None
+    return abs(resid) / sr * 1000.0
+
+
 def reverb_sustain(mono: np.ndarray, sr: int) -> float:
     """How much energy 'fills the gaps' between loud parts (0..1).
 
@@ -620,13 +655,15 @@ def run_checks(
             )
         )
 
-    # Sync between raw recordings.
+    # Sync between phones, judged AFTER alignment (the raw start gap is corrected
+    # automatically, so what matters is the leftover offset once aligned).
     if raw_offset_ms is not None:
         checks.append(
             Check(
-                "Raw recordings sync offset estimated",
-                True,
-                f"estimated offset {raw_offset_ms:.0f} ms between raw phones",
+                "Phones in sync after alignment",
+                raw_offset_ms <= 50.0,
+                f"residual offset {raw_offset_ms:.0f} ms after alignment "
+                f"(<=50ms; the raw start gap is corrected automatically)",
             )
         )
     if drift_ms is not None:
@@ -744,9 +781,10 @@ def check_baseline(
     sync = baseline.get("sync", {})
     if raw_offset_ms is not None and sync:
         out.append(Check(
-            "Baseline · raw sync offset",
+            "Baseline · sync residual after alignment",
             raw_offset_ms <= sync["raw_offset_ms_max"],
-            f"{raw_offset_ms:.0f} ms (<= {sync['raw_offset_ms_max']})",
+            f"{raw_offset_ms:.0f} ms residual after alignment "
+            f"(<= {sync['raw_offset_ms_max']})",
         ))
     if drift_ms is not None and sync:
         out.append(Check(
@@ -811,8 +849,8 @@ def build_summary(
             cleaner,
         ))
 
-    # Q3 — Is sync acceptable?  (driven by the baseline sync checks)
-    sync_checks = [c for c in baseline_checks if c.name.startswith("Baseline · raw sync")
+    # Q3 — Is sync acceptable?  (driven by the post-alignment sync + drift checks)
+    sync_checks = [c for c in baseline_checks if c.name.startswith("Baseline · sync")
                    or c.name.startswith("Baseline · drift")]
     if sync_checks:
         ok = all(c.passed for c in sync_checks)
@@ -1113,13 +1151,11 @@ def build_report(
     raw_clips = [c for c in clips if c.role == "raw"]
     if len(raw_clips) >= 2:
         try:
-            tracks = [
-                processing.LoadedTrack(c.label, c.mono, c.sr, None)
-                for c in raw_clips[:2]
-            ]
-            offs = processing.compute_offsets(tracks)
-            vals = list(offs.values())
-            raw_offset_ms = abs(vals[0] - vals[1]) / raw_clips[0].sr * 1000.0
+            # Residual offset AFTER alignment (the raw start gap is corrected
+            # automatically); this is what reflects real output sync quality.
+            raw_offset_ms = residual_offset_ms(
+                raw_clips[0].mono, raw_clips[1].mono, raw_clips[0].sr
+            )
             drift_ms = estimate_drift_ms(
                 raw_clips[0].mono, raw_clips[1].mono, raw_clips[0].sr
             )

@@ -81,6 +81,7 @@ export interface OutputItem {
 export interface QualitySummaryItem {
   question: string;
   answer: string;
+  detail: string;
   good: boolean;
 }
 

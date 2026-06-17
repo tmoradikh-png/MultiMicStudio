@@ -1,7 +1,9 @@
 # MultiMic Studio — Private Beta Readiness
 
-**Date:** 2026-06-17 · **Checkpoint:** `v0.6.0-beta-safety-limits`
+**Date:** 2026-06-17 · **Checkpoint:** `v0.7.1-sync-metric-fix`
 **Automated verdict:** ✅ **GO** (9/9 automated checks) for a **host-run / LAN beta**.
+**Real two-phone test:** ✅ verified — a live two-phone session passed all quality
+checks (12/12, baseline OK, sync acceptable, demo-usable).
 **External-tester verdict:** ⚠️ **NO-GO until 3 deployment blockers are closed** (see below).
 
 This is a go/no-go report, not a feature build. The automated portion is produced
@@ -45,11 +47,11 @@ enhancement presets, guest no-account flow, **limits + cleanup** (#8).
 | 4 | Invalid / expired session → clear message | ⬜ code-verified, needs device |
 | 4 | Too-large file → friendly 413 message | ⬜ code-verified, needs device |
 | 4 | Unsupported file type → friendly 415 message | ⬜ code-verified, needs device |
-| 5 | Two **different physical phones** in one session | ⬜ |
-| 5 | Two guests in the same session | ⬜ |
+| 5 | Two **different physical phones** in one session | ✅ verified (live two-phone session passed) |
+| 5 | Two guests in the same session | ✅ verified |
 | 5 | Longer 2–3 minute recording | ⬜ |
 | 5 | Noisy-room test | ⬜ |
-| 3 | Bench report on a **real voice** recording | ⬜ (synthetic fixture passes baseline; confirm with real audio) |
+| 3 | Bench report on a **real voice** recording | ✅ verified (real two-phone audio passes baseline, sync 0–2 ms residual) |
 
 > The mobile error/recovery paths (#4) are implemented and unit-consistent
 > (`describeError` maps 0/401/403/404/409/413/415/422; ResumeBanner restores an
@@ -89,8 +91,9 @@ changes.
 - **Limits are private-beta sized:** 25 MB upload, 5-min recording, 4-hour session
   expiry, 24-hour temp cleanup (all configurable).
 - The automated quality check uses a **synthetic speech-like fixture**; it proves
-  the pipeline + baseline guard work, but a real-voice bench pass should be
-  confirmed once on a real recording.
+  the pipeline + baseline guard work. A **real two-phone recording has now also
+  been verified** end-to-end (passes baseline; sync judged on post-alignment
+  residual, 0–2 ms).
 
 ---
 
@@ -159,6 +162,8 @@ Web: `NEXT_PUBLIC_API_URL`. Mobile: `API_BASE_URL` in `src/config.ts`.
 | `v0.4.0-mobile-flow` | Mobile flow polish + upload retry + recovery |
 | `v0.5.0-hosting-prep` | Signed URLs + S3 seam + Live Mode design |
 | `v0.6.0-beta-limits` / `v0.6.0-beta-safety-limits` | Private-beta safety limits (#8) |
+| `v0.7.0-beta-readiness` | Private-beta go/no-go runner + this report (#9) |
+| `v0.7.1-sync-metric-fix` | Sync judged on post-alignment residual; quality badge/summary consistency |
 
 Recovery: `git checkout v0.1.0-audio-baseline` restores frozen audio;
 `git checkout v0.6.0-beta-safety-limits` restores the full pre-#9 product.

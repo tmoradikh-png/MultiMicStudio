@@ -161,6 +161,7 @@ class OutputItem(BaseModel):
 class QualitySummaryItem(BaseModel):
     question: str
     answer: str
+    detail: str = ""
     good: bool
 
 
