@@ -3,7 +3,8 @@ import { Pressable, Text, View } from "react-native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useAuth } from "../context/AuthContext";
 import ResumeBanner from "../components/ResumeBanner";
-import { styles } from "../theme";
+import { API_BASE_URL, API_BASE_URL_IS_DEFAULT } from "../config";
+import { colors, styles } from "../theme";
 import type { RootStackParamList } from "../navigation/types";
 
 type Props = NativeStackScreenProps<RootStackParamList, "Home">;
@@ -45,6 +46,13 @@ export default function HomeScreen({ navigation }: Props) {
       <Pressable style={styles.buttonGhost} onPress={signOut}>
         <Text style={styles.buttonGhostText}>Sign out</Text>
       </Pressable>
+
+      <Text
+        style={{ color: colors.muted, fontSize: 12, marginTop: 24, textAlign: "center" }}
+      >
+        Server: {API_BASE_URL}
+        {API_BASE_URL_IS_DEFAULT ? " (local)" : ""}
+      </Text>
     </View>
   );
 }
