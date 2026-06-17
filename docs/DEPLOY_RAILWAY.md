@@ -35,20 +35,30 @@ The repo root is `MultiMicStudio/`; the backend lives in `backend/`. Point Railw
 at the `backend/` directory so it uses [backend/Dockerfile](../backend/Dockerfile)
 and [backend/railway.json](../backend/railway.json).
 
+> ⚠️ **CRITICAL — set Root Directory = `backend` BEFORE the first deploy.** This is
+> a monorepo (`backend/`, `web/`, `mobile/`, `docs/`). If Root Directory is left at
+> the repo root, Railway can't see `backend/Dockerfile` and falls back to its own
+> builder (Railpack), which fails with *"Railpack could not determine how to build
+> the app."* See Troubleshooting at the bottom.
+
 **Dashboard route**
 1. New Project → Deploy from GitHub repo → pick the repo.
-2. Service → Settings → **Root Directory** = `backend`.
-3. Build is auto-detected as Dockerfile (railway.json pins it). Health check path
-   is already `/health` (from railway.json).
+2. Service → **Settings → Build (Source)** → set **Root Directory** = `backend`. **(required)**
+3. With Root Directory = `backend`, the Builder auto-detects **Dockerfile**
+   (`railway.json` pins it) and the health check path is `/health`.
+4. Redeploy.
 
 **CLI route (deploy local folder)**
 ```powershell
 cd C:\Users\Greencom\OneDrive\Documents\aiChat\MultiMicStudio\backend
 railway init           # creates/links a project
-railway up             # builds the Dockerfile and deploys
+railway up             # builds the Dockerfile from THIS folder and deploys
 ```
+(Running `railway up` from inside `backend/` makes that folder the build context,
+so the Root Directory setting isn't needed for the CLI path.)
 
 Railway injects `$PORT`; the Dockerfile/`startCommand` already bind to it.
+
 
 ---
 
@@ -202,3 +212,24 @@ The Home screen footer shows the active server. Unset → local LAN fallback sti
 - [ ] Schedule cleanup: add a Railway **Cron** service/job running
       `python scripts/cleanup.py` (daily), or run it manually for the beta.
 - [ ] No secrets in build logs; real `.env` never committed.
+
+---
+
+## Troubleshooting
+
+**Build fails: "Railpack could not determine how to build the app" / "Script
+start.sh not found"** — Railway is building from the repo root instead of `backend/`,
+so it never sees `backend/Dockerfile` and falls back to the Railpack builder. The
+build-log tree will list `backend/ docs/ mobile/ web/` (the repo root).
+→ Fix: Service → **Settings → Build (Source) → Root Directory = `backend`**, confirm
+Builder = Dockerfile, redeploy. (Or deploy via the CLI from inside `backend/`.)
+
+**Build fails on `COPY requirements.txt …`** — same cause: the build context is the
+repo root, where those files don't exist. Setting Root Directory = `backend` makes
+the context `backend/`, where they live.
+
+**Health check fails after a successful build** — confirm the service got all env
+vars (especially `DATABASE_URL`) and that Postgres is reachable; check Deploy Logs
+for the startup `init_db()` step. `/health` should return
+`{"status":"ok","storage":"s3","live_mode":"off"}`.
+
