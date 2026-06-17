@@ -233,3 +233,9 @@ vars (especially `DATABASE_URL`) and that Postgres is reachable; check Deploy Lo
 for the startup `init_db()` step. `/health` should return
 `{"status":"ok","storage":"s3","live_mode":"off"}`.
 
+**Deploy logs show `Invalid value for '--port': '$PORT' is not a valid integer`**
+— the start command is being run without shell variable expansion, so the literal
+text `$PORT` reaches uvicorn. The `startCommand` in `railway.json` is wrapped in
+`sh -c "... --port ${PORT:-8000}"` so the shell expands `$PORT` (Railway injects it).
+If you override the start command in the dashboard, keep that `sh -c` wrapper.
+
