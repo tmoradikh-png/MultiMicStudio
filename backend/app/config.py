@@ -42,6 +42,25 @@ class Settings(BaseSettings):
     transcription_backend: str = "stub"     # "stub" | "faster-whisper"
     whisper_model: str = "base"
 
+    # --- Private-beta safety limits ----------------------------------------
+    # Per-upload size cap. A larger file is rejected with HTTP 413 before it ever
+    # touches storage or processing. 0 disables the check.
+    max_upload_bytes: int = 26_214_400              # 25 MB
+    # Per-recording duration cap (client-reported). A longer take is rejected
+    # with HTTP 413 so over-long audio never enters processing. 0 disables.
+    max_recording_seconds: float = 300.0            # 5 minutes (private-beta)
+    # Accepted upload file extensions (comma-separated). Anything else -> 415.
+    allowed_audio_extensions: str = (
+        "wav,m4a,mp3,aac,caf,ogg,oga,opus,webm,flac,mp4,3gp,amr"
+    )
+    # Open/inactive sessions older than this are treated as expired for JOINING
+    # and are closed by the cleanup job. Completed projects stay accessible.
+    # 0 disables expiry. (private-beta default: 4 hours)
+    session_expiry_minutes: int = 240
+    # Cleanup job: failed uploads / abandoned empty sessions older than this are
+    # removed. Successful project outputs are NEVER deleted by cleanup.
+    cleanup_temp_max_age_hours: int = 24
+
     # --- Live Mode (FUTURE milestone; default OFF) -------------------------
     # Feature flag seam only: when False the app is the offline record→upload→
     # process→export product exactly as today. Real-time transport/worker are a
@@ -58,6 +77,15 @@ class Settings(BaseSettings):
     def signing_key(self) -> str:
         """Secret used for HMAC file-URL signatures (dedicated, else JWT secret)."""
         return self.file_signing_secret or self.jwt_secret
+
+    @property
+    def allowed_audio_extension_set(self) -> set[str]:
+        """Normalised set of accepted upload extensions (lowercase, no dots)."""
+        return {
+            e.strip().lower().lstrip(".")
+            for e in self.allowed_audio_extensions.split(",")
+            if e.strip()
+        }
 
 
 @lru_cache

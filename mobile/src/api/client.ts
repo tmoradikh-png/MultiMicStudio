@@ -161,7 +161,11 @@ export function describeError(err: unknown): string {
       case err.status === 409:
         return err.detail || "This session is no longer open to join. Ask the host for a new code.";
       case err.status === 413:
-        return "That recording is too large to upload. Try a shorter take.";
+        return "That recording is too large or too long to upload. Try a shorter take.";
+      case err.status === 415:
+        return err.detail || "That file type isn't supported. Please record audio in the app.";
+      case err.status === 422:
+        return err.detail || "That recording couldn't be read. Please record again.";
       case err.status >= 500:
         return "The server hit a problem. Please wait a moment and try again.";
       default:

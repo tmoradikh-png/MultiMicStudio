@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.auth import generate_guest_token
+from app.cleanup import session_is_expired
 from app.database import get_db
 from app.deps import Principal, get_current_user, get_optional_principal, get_principal
 from app.models import (
@@ -97,6 +98,15 @@ def join_session(
     )
     if session is None:
         raise HTTPException(status_code=404, detail="Invalid session code")
+
+    # An open session that has been inactive too long is treated as expired, so a
+    # guest gets a clear message instead of joining a dead session. Completed
+    # projects keep their own status (ended/ready) and are unaffected.
+    if session_is_expired(session):
+        raise HTTPException(
+            status_code=409,
+            detail="This session has expired. Ask the host to start a new one.",
+        )
 
     # A returning guest whose token is bound to THIS session simply reconnects.
     if (

@@ -17,6 +17,11 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.deps import Principal, get_current_user, get_principal
+from app.limits import (
+    read_within_size_limit,
+    validate_duration,
+    validate_filetype,
+)
 from app.models import (
     Recording,
     RecordingSession,
@@ -59,6 +64,18 @@ def upload_recording(
     if not allowed:
         raise HTTPException(status_code=403, detail="Not allowed to upload here")
 
+    # Private-beta safety limits — validate BEFORE creating any row or touching
+    # storage, so a rejected upload leaves no trace and never enters processing.
+    suffix = validate_filetype(
+        file.filename, session_id=session_id, participant_id=participant_id
+    )
+    validate_duration(
+        duration_seconds, session_id=session_id, participant_id=participant_id
+    )
+    payload = read_within_size_limit(
+        file.file, session_id=session_id, participant_id=participant_id
+    )
+
     # Tie the upload to a take: trust the client value, else fall back to the
     # session's current take so a mix never mixes audio across attempts.
     effective_take_id = take_id or session.current_take_id
@@ -76,10 +93,9 @@ def upload_recording(
     db.flush()
 
     storage = get_storage()
-    suffix = (file.filename or "audio").split(".")[-1].lower()
     key = f"recordings/{session_id}/{recording.id}.{suffix}"
     try:
-        file_url = storage.save(key, file.file)
+        file_url = storage.save(key, payload)
     except Exception as exc:  # noqa: BLE001
         recording.upload_status = UploadStatus.failed
         db.commit()

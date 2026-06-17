@@ -109,6 +109,7 @@ def _run(client: TestClient) -> None:
 
     _test_single_phone_and_dedup(client, headers)
     _test_guest_no_account_flow(client, headers)
+    _test_limits_and_cleanup(client, headers)
 
 
 def _wav_duration_seconds(content: bytes) -> float:
@@ -553,6 +554,164 @@ def _test_guest_no_account_flow(client: TestClient, host_headers: dict) -> None:
     print("  2 phones joined by code (no login), each got its own token;")
     print("  retry deduped to 1 recording/guest; cross-guest upload blocked.")
     print("  restart/reconnect with same token reused the same participant.")
+
+
+def _test_limits_and_cleanup(client: TestClient, headers: dict) -> None:
+    """Private-beta safety limits + cleanup policy (#8).
+
+    Covers: too-large upload, too-long recording, invalid type, empty file,
+    expired/closed session join, and that cleanup preserves active/completed
+    project outputs while removing failed uploads. (Guest-retry dedup is covered
+    by the guest-flow test above.)
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.cleanup import run_cleanup
+    from app.config import get_settings
+    from app.database import SessionLocal
+    from app.models import Recording, RecordingSession, UploadStatus
+    from app.storage import get_storage
+
+    settings = get_settings()
+
+    def naive_now() -> datetime:
+        return datetime.now(timezone.utc).replace(tzinfo=None)
+
+    r = client.post("/sessions", json={"title": "Limits"}, headers=headers)
+    assert r.status_code == 201, r.text
+    session = r.json()
+    session_id = session["id"]
+    pid = session["participants"][0]["id"]
+
+    good = make_wav(clap_at_s=0.4, length_s=2.0, seed=11)
+
+    def upload(filename: str, content: bytes, ctype: str = "audio/wav", duration: str = "2.0"):
+        return client.post(
+            "/recordings",
+            data={
+                "session_id": session_id,
+                "participant_id": pid,
+                "sample_rate": str(SR),
+                "duration_seconds": duration,
+            },
+            files={"file": (filename, content, ctype)},
+            headers=headers,
+        )
+
+    # (a) too-large upload -> 413
+    orig_bytes = settings.max_upload_bytes
+    settings.max_upload_bytes = 1000
+    try:
+        r = upload("big.wav", good)
+        assert r.status_code == 413, f"oversize upload not rejected: {r.status_code}"
+    finally:
+        settings.max_upload_bytes = orig_bytes
+
+    # (b) too-long recording -> 413
+    orig_secs = settings.max_recording_seconds
+    settings.max_recording_seconds = 1.0
+    try:
+        r = upload("long.wav", good, duration="9.0")
+        assert r.status_code == 413, f"over-long recording not rejected: {r.status_code}"
+    finally:
+        settings.max_recording_seconds = orig_secs
+
+    # (c) invalid file type -> 415
+    r = upload("notes.txt", b"this is not audio at all", ctype="text/plain")
+    assert r.status_code == 415, f"invalid type not rejected: {r.status_code}"
+
+    # (d) empty file -> 422
+    r = upload("empty.wav", b"")
+    assert r.status_code == 422, f"empty file not rejected: {r.status_code}"
+
+    # (e) a valid upload still works under the same limits
+    r = upload("ok.wav", good)
+    assert r.status_code == 201, f"valid upload wrongly blocked: {r.text}"
+
+    # (f) closed session -> guest join blocked (409)
+    r = client.post("/sessions", json={"title": "Closing"}, headers=headers)
+    s2 = r.json()
+    client.post(f"/sessions/{s2['id']}/stop", headers=headers)
+    r = client.post("/sessions/join", json={"code": s2["code"], "speaker_name": "Late"})
+    assert r.status_code == 409, f"join to closed session not blocked: {r.status_code}"
+
+    # (g) expired open session -> clear 409 message
+    r = client.post("/sessions", json={"title": "Expiring"}, headers=headers)
+    s3 = r.json()
+    db = SessionLocal()
+    try:
+        srow = db.get(RecordingSession, s3["id"])
+        srow.started_at = None
+        srow.created_at = naive_now() - timedelta(minutes=settings.session_expiry_minutes + 10)
+        db.commit()
+    finally:
+        db.close()
+    r = client.post("/sessions/join", json={"code": s3["code"], "speaker_name": "Late"})
+    assert r.status_code == 409, f"join to expired session not blocked: {r.status_code}"
+    assert "expired" in r.json()["detail"].lower(), r.json()
+
+    # (h) build a COMPLETED project that cleanup must never touch
+    r = client.post("/sessions", json={"title": "Keep me"}, headers=headers)
+    keep = r.json()
+    keep_id = keep["id"]
+    keep_pid = keep["participants"][0]["id"]
+    r = client.post(
+        "/recordings",
+        data={
+            "session_id": keep_id,
+            "participant_id": keep_pid,
+            "sample_rate": str(SR),
+            "duration_seconds": "2.0",
+        },
+        files={"file": ("keep.wav", good, "audio/wav")},
+        headers=headers,
+    )
+    assert r.status_code == 201, r.text
+    assert client.post(f"/projects/process/{keep_id}", headers=headers).status_code == 202
+    project = client.get(f"/projects/{keep_id}", headers=headers).json()
+    assert project["processing_status"] == "done", project
+    final_url = project["final_audio_url"]
+    assert client.get(final_url).status_code == 200
+
+    # (i) an OLD failed upload that cleanup SHOULD remove (file + row)
+    storage = get_storage()
+    db = SessionLocal()
+    try:
+        rec = Recording(
+            session_id=keep_id,
+            participant_id=keep_pid,
+            upload_status=UploadStatus.failed,
+        )
+        db.add(rec)
+        db.flush()
+        failed_key = f"recordings/{keep_id}/{rec.id}.wav"
+        failed_url = storage.save(failed_key, io.BytesIO(good))
+        rec.file_url = failed_url
+        rec.created_at = naive_now() - timedelta(
+            hours=settings.cleanup_temp_max_age_hours + 1
+        )
+        rec_id = rec.id
+        db.commit()
+    finally:
+        db.close()
+    assert client.get(failed_url).status_code == 200, "failed-upload file should exist pre-cleanup"
+
+    db = SessionLocal()
+    try:
+        summary = run_cleanup(db)
+        assert db.get(Recording, rec_id) is None, "old failed recording not deleted"
+    finally:
+        db.close()
+
+    # Completed project + its output survive cleanup; the failed file is gone.
+    assert client.get(f"/projects/{keep_id}", headers=headers).json()["processing_status"] == "done"
+    assert client.get(final_url).status_code == 200, "cleanup deleted a completed output!"
+    assert client.get(failed_url).status_code == 404, "failed-upload file not cleaned"
+
+    print("LIMITS + CLEANUP TEST PASSED")
+    print(f"  rejected: oversize(413), over-long(413), bad-type(415), empty(422)")
+    print(f"  expired+closed sessions blocked from join; cleanup summary={summary}")
+    print("  cleanup kept completed project output, removed old failed upload.")
 
 
 if __name__ == "__main__":
