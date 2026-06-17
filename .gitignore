@@ -29,6 +29,8 @@ build/
 .env
 .env.*
 !.env.example
+!.env.production.example
+!.env.local.example
 
 # --- Editor / OS ---
 .DS_Store

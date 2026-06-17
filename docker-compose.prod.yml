@@ -1,0 +1,105 @@
+# Local PRODUCTION SIMULATION for the MultiMic Studio backend.
+#
+# Brings up the hosted topology on your machine so you can verify the container,
+# Postgres and S3-compatible storage paths before choosing a real host:
+#   - backend : the production image (Dockerfile), config from env
+#   - db      : PostgreSQL
+#   - minio   : S3-compatible object storage (stands in for S3 / R2 / Spaces)
+#   - minio-setup : one-shot job that creates the bucket
+#
+# This file intentionally contains LOCAL-ONLY demo credentials. Never reuse these
+# values for a real deployment — a hosted deploy gets its config from the host's
+# secret store / a private .env (see backend/.env.production.example).
+#
+#   docker compose -f docker-compose.prod.yml up --build
+#   # API:    http://localhost:8000/health
+#   # MinIO:  http://localhost:9001  (console; user/pass: minioadmin / minioadmin)
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: multimic
+      POSTGRES_PASSWORD: multimic_local_only
+      POSTGRES_DB: multimic
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U multimic -d multimic"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "5432:5432"
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+
+  # One-shot: wait for MinIO, then create the bucket the backend will use.
+  minio-setup:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb --ignore-existing local/multimic-recordings &&
+      echo 'bucket ready';
+      "
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
+    environment:
+      # --- Core ---
+      DATABASE_URL: postgresql+psycopg2://multimic:multimic_local_only@db:5432/multimic
+      JWT_SECRET: local-sim-secret-change-for-real-deploys
+      PUBLIC_BASE_URL: http://localhost:8000
+      CORS_ORIGINS: http://localhost:3000,http://localhost:19006
+      # --- Secure file URLs ---
+      FILE_URL_SIGNING: "true"
+      FILE_URL_TTL_SECONDS: "3600"
+      FILE_SIGNING_SECRET: local-sim-file-secret-change-me
+      # --- S3-compatible storage (MinIO) ---
+      STORAGE_BACKEND: s3
+      S3_BUCKET: multimic-recordings
+      S3_REGION: us-east-1
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY_ID: minioadmin
+      S3_SECRET_ACCESS_KEY: minioadmin
+      # --- Limits (private-beta defaults) ---
+      MAX_UPLOAD_BYTES: "26214400"
+      MAX_RECORDING_SECONDS: "300"
+      SESSION_EXPIRY_MINUTES: "240"
+      CLEANUP_TEMP_MAX_AGE_HOURS: "24"
+      # --- Keep Live Mode OFF ---
+      LIVE_MODE_ENABLED: "false"
+    ports:
+      - "8000:8000"
+
+volumes:
+  pgdata:
+  miniodata:

@@ -1,0 +1,23 @@
+# Keep the image small and free of local dev state / secrets.
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Local dev data — must never enter the image.
+multimic.db
+storage/
+bench_out/
+bench_out_beta/
+
+# Local secrets / env files (config comes from runtime env vars only).
+.env
+.env.*
+!.env.production.example
+
+# Tooling noise.
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.log
