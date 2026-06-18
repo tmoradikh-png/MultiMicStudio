@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>MultiMic — Live Speaker</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, "Segoe UI", Arial, sans-serif; margin: 0;
+    background: #0f1419; color: #e6e6e6; }
+  .wrap { max-width: 520px; margin: 0 auto; padding: 24px 20px 60px; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  .sub { color: #9aa4af; font-size: 14px; line-height: 1.5; margin: 0 0 16px; }
+  label { display: block; font-size: 13px; color: #9aa4af; margin: 12px 0 4px; }
+  input, select { width: 100%; box-sizing: border-box; padding: 11px 12px;
+    background: #1a212b; border: 1px solid #2a3441; border-radius: 9px;
+    color: #e6e6e6; font-size: 15px; }
+  button { width: 100%; margin-top: 18px; padding: 16px; border: 0;
+    border-radius: 12px; font-size: 17px; font-weight: 700; cursor: pointer; }
+  #go { background: #2563eb; color: #fff; }
+  #go.on { background: #dc2626; }
+  #mute { background: #334155; color: #e6e6e6; margin-top: 10px; font-size: 15px; }
+  .presets { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 6px; }
+  .preset { padding: 12px; border: 1px solid #2a3441; border-radius: 10px;
+    background: #1a212b; cursor: pointer; text-align: left; font-size: 14px; }
+  .preset.sel { border-color: #2563eb; background: #14203a; }
+  .preset .nm { font-weight: 700; color: #e6e6e6; }
+  .preset .ds { font-size: 11px; color: #8b96a2; margin-top: 2px; }
+  .status { margin-top: 18px; background: #1a212b; border: 1px solid #2a3441;
+    border-radius: 12px; padding: 14px; font-size: 14px; }
+  .line { display: flex; justify-content: space-between; padding: 4px 0; align-items: center; }
+  .k { color: #8b96a2; }
+  .pill { font-size: 12px; padding: 2px 9px; border-radius: 999px; }
+  .ok { background: #064e3b; color: #6ee7b7; }
+  .bad { background: #7f1d1d; color: #fca5a5; }
+  .warn { background: #78350f; color: #fcd34d; }
+  .muted { background: #3a3f4a; color: #c7ccd4; }
+  ul { list-style: none; padding: 0; margin: 8px 0 0; }
+  li { display: flex; justify-content: space-between; align-items: center; font-size: 13px;
+    padding: 6px 0; border-top: 1px solid #232c38; gap: 8px; }
+  li .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .toggle { display: flex; align-items: center; gap: 10px; margin-top: 16px;
+    font-size: 14px; color: #cdd5df; }
+  .toggle input { width: 20px; height: 20px; }
+  .out { margin-top: 14px; background: #102a1c; border: 1px solid #1f5135;
+    border-radius: 10px; padding: 12px 14px; font-size: 13px; color: #a7f3d0; line-height: 1.5; }
+  .note { font-size: 12px; color: #6b7480; margin-top: 16px; line-height: 1.55; }
+  #saved { margin-top: 14px; display: none; }
+  #saved a { color: #6ee7b7; font-weight: 700; }
+  audio { width: 100%; margin-top: 8px; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>🔊 Live speaker</h1>
+    <p class="sub">
+      This device gathers every microphone in the room, mixes them, processes them
+      live with the sound you choose, and plays the result out of whatever is
+      connected here — a <strong>Bluetooth speaker</strong> or <strong>wired</strong>
+      output.
+    </p>
+
+    <div class="out">
+      🔌 <strong>Output:</strong> connect your speaker first (pair Bluetooth or plug
+      in wired) — the live mix follows this device's audio output.
+    </div>
+
+    <label for="room">Room code (same as the microphones)</label>
+    <input id="room" autocapitalize="characters" autocomplete="off" placeholder="e.g. STAGE1" />
+
+    <label>Live sound</label>
+    <div class="presets" id="presets"></div>
+
+    <button id="go">Start</button>
+    <button id="mute" hidden>Mute output</button>
+
+    <label class="toggle">
+      <input id="save" type="checkbox" />
+      Also save a recording of the live mix
+    </label>
+
+    <label for="vol">Volume</label>
+    <div style="display:flex;align-items:center;gap:12px;margin-top:6px;">
+      <span>🔉</span>
+      <input id="vol" type="range" min="0" max="200" value="100" style="flex:1;" />
+      <span id="volval" style="width:42px;text-align:right;">100%</span>
+    </div>
+
+    <div class="status">
+      <div class="line"><span class="k">Status</span><span id="st" class="pill bad">stopped</span></div>
+      <div class="line"><span class="k">Sound</span><span id="soundp" class="pill muted">Natural</span></div>
+      <div class="line"><span class="k">Latency</span><span id="lat" class="pill warn">—</span></div>
+      <div class="line"><span class="k">Microphones</span><span id="mics">0</span></div>
+      <ul id="miclist"></ul>
+    </div>
+
+    <div id="saved">
+      <strong>Saved recording</strong>
+      <audio id="savedAudio" controls></audio>
+      <div><a id="savedLink" download="live-mix.webm">⬇ Download recording</a></div>
+    </div>
+
+    <div class="note">
+      Bluetooth output adds a short delay (about a quarter second); wired is
+      near-instant. Keep the mics away from this speaker to avoid feedback.
+    </div>
+  </div>
+
+<script>
+const SAMPLE_RATE = 48000;
+const JITTER_LEAD = 0.18;
+const RING_SEC = 6;
+const $ = (id) => document.getElementById(id);
+
+const PRESETS = [
+  { id: "natural",      nm: "Natural / Stereo", ds: "Clean, as-is mix" },
+  { id: "studio_voice", nm: "Studio Voice",     ds: "Warm, clear speech" },
+  { id: "podcast",      nm: "Podcast",          ds: "Tight, intelligible" },
+  { id: "karaoke",      nm: "Karaoke",          ds: "Singing + space" },
+  { id: "party",        nm: "Party / Room",     ds: "Big, wide, fun" },
+];
+let mode = localStorage.getItem("mm_live_mode") || "natural";
+
+let ws, ctx, mixer, masterGain, chain, analyser, on = false, muted = false;
+let recDest, recorder, recChunks = [];
+// Stereo ring + one write head per mic (slot) so several phones mix together.
+let ringL, ringR, ringLen, readPos = 0;
+const writers = {};
+
+$("room").value = localStorage.getItem("mm_live_room") || "";
+const _qp = new URLSearchParams(location.search);
+if (_qp.get("room")) $("room").value = _qp.get("room").toUpperCase();
+if (_qp.get("mode")) mode = _qp.get("mode");
+if (_qp.get("save") === "1") $("save").checked = true;
+
+function setStatus(t, cls) { const s = $("st"); s.textContent = t; s.className = "pill " + cls; }
+function setPill(id, t, cls) { const e = $(id); e.textContent = t; e.className = "pill " + cls; }
+
+// Build the preset buttons.
+function renderPresets() {
+  const box = $("presets");
+  box.innerHTML = "";
+  for (const p of PRESETS) {
+    const d = document.createElement("div");
+    d.className = "preset" + (p.id === mode ? " sel" : "");
+    d.innerHTML = `<div class="nm">${p.nm}</div><div class="ds">${p.ds}</div>`;
+    d.onclick = () => {
+      mode = p.id;
+      localStorage.setItem("mm_live_mode", mode);
+      renderPresets();
+      setPill("soundp", presetName(mode), "muted");
+      if (on) rebuildChain(); // switch the live sound instantly
+    };
+    box.appendChild(d);
+  }
+}
+function presetName(id) { return (PRESETS.find((p) => p.id === id) || PRESETS[0]).nm; }
+renderPresets();
+setPill("soundp", presetName(mode), "muted");
+
+$("vol").oninput = () => {
+  $("volval").textContent = $("vol").value + "%";
+  if (masterGain && ctx) masterGain.gain.setTargetAtTime(
+    (muted ? 0 : 1) * (Number($("vol").value) / 100), ctx.currentTime, 0.03);
+};
+
+function wsUrl(room) {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const q = new URLSearchParams({ role: "listener", name: "Speaker" });
+  return `${proto}://${location.host}/live/ws/${encodeURIComponent(room)}?${q}`;
+}
+
+// --- Live preset chains (WebAudio approximations of the saved-file presets) ---
+function makeReverb(ctx, wetGain, time) {
+  // Simple feedback-delay reverb (no impulse file needed).
+  const pre = ctx.createDelay(1.0); pre.delayTime.value = 0.02;
+  const fb = ctx.createGain(); fb.gain.value = Math.min(0.85, time);
+  const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 3200;
+  const wet = ctx.createGain(); wet.gain.value = wetGain;
+  pre.connect(lp); lp.connect(fb); fb.connect(pre); lp.connect(wet);
+  return { input: pre, output: wet };
+}
+
+function buildPreset(ctx, id) {
+  const input = ctx.createGain();
+  const output = ctx.createGain();
+  const nodes = [input, output];
+  const hp = (f) => { const n = ctx.createBiquadFilter(); n.type = "highpass"; n.frequency.value = f; nodes.push(n); return n; };
+  const peak = (f, q, g) => { const n = ctx.createBiquadFilter(); n.type = "peaking"; n.frequency.value = f; n.Q.value = q; n.gain.value = g; nodes.push(n); return n; };
+  const shelfHi = (f, g) => { const n = ctx.createBiquadFilter(); n.type = "highshelf"; n.frequency.value = f; n.gain.value = g; nodes.push(n); return n; };
+  const shelfLo = (f, g) => { const n = ctx.createBiquadFilter(); n.type = "lowshelf"; n.frequency.value = f; n.gain.value = g; nodes.push(n); return n; };
+  const comp = (thr, ratio) => { const n = ctx.createDynamicsCompressor(); n.threshold.value = thr; n.knee.value = 24; n.ratio.value = ratio; n.attack.value = 0.005; n.release.value = 0.2; nodes.push(n); return n; };
+
+  if (id === "studio_voice") {
+    const a = hp(100), b = peak(3000, 0.9, 3), c = comp(-22, 3);
+    input.connect(a); a.connect(b); b.connect(c); c.connect(output);
+  } else if (id === "podcast") {
+    const a = hp(100), b = peak(300, 1.0, -2), c = peak(2500, 0.9, 2),
+          d = shelfHi(6500, -2), e = comp(-20, 3.5);
+    input.connect(a); a.connect(b); b.connect(c); c.connect(d); d.connect(e); e.connect(output);
+  } else if (id === "karaoke") {
+    const a = hp(90), b = peak(3000, 0.9, 2), c = comp(-24, 2.5);
+    input.connect(a); a.connect(b); b.connect(c); c.connect(output);
+    const rv = makeReverb(ctx, 0.25, 0.5); c.connect(rv.input); rv.output.connect(output);
+  } else if (id === "party") {
+    const lo = shelfLo(120, 4), pr = peak(4000, 0.8, 2), c = comp(-22, 3);
+    input.connect(lo); lo.connect(pr); pr.connect(c); c.connect(output);
+    const rv = makeReverb(ctx, 0.18, 0.4); c.connect(rv.input); rv.output.connect(output);
+  } else {
+    // natural — clean pass-through.
+    input.connect(output);
+  }
+  return { input, output, nodes };
+}
+
+function rebuildChain() {
+  // Disconnect mixer from the old chain, build a new one, reconnect.
+  try { mixer.disconnect(); } catch (_) {}
+  if (chain) { for (const n of chain.nodes) { try { n.disconnect(); } catch (_) {} } }
+  chain = buildPreset(ctx, mode);
+  mixer.connect(chain.input);
+  chain.output.connect(masterGain);
+}
+
+async function start() {
+  if (on) { stop(); return; }
+  const room = $("room").value.trim();
+  if (!room) { alert("Enter the room code first."); return; }
+  localStorage.setItem("mm_live_room", room);
+
+  ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+  await ctx.resume();
+
+  ringLen = SAMPLE_RATE * RING_SEC;
+  ringL = new Float32Array(ringLen);
+  ringR = new Float32Array(ringLen);
+  readPos = 0;
+  for (const k in writers) delete writers[k];
+
+  // mixer (drains the ring) -> preset chain -> masterGain -> speaker output
+  mixer = ctx.createScriptProcessor(2048, 0, 2);
+  mixer.onaudioprocess = (e) => {
+    const outL = e.outputBuffer.getChannelData(0);
+    const outR = e.outputBuffer.getChannelData(1);
+    for (let i = 0; i < outL.length; i++) {
+      const idx = readPos % ringLen;
+      outL[i] = clip(ringL[idx]); outR[i] = clip(ringR[idx]);
+      ringL[idx] = 0; ringR[idx] = 0;
+      readPos++;
+    }
+  };
+  masterGain = ctx.createGain();
+  masterGain.gain.value = (muted ? 0 : 1) * (Number($("vol").value) / 100);
+  analyser = ctx.createAnalyser(); analyser.fftSize = 1024;
+  rebuildChain();
+  masterGain.connect(ctx.destination);
+  masterGain.connect(analyser);
+
+  if ($("save").checked && window.MediaRecorder) {
+    try {
+      recDest = ctx.createMediaStreamDestination();
+      masterGain.connect(recDest);
+      const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus"
+        : (MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4" : "");
+      recorder = mime ? new MediaRecorder(recDest.stream, { mimeType: mime }) : new MediaRecorder(recDest.stream);
+      recChunks = [];
+      recorder.ondataavailable = (ev) => { if (ev.data && ev.data.size) recChunks.push(ev.data); };
+      recorder.onstop = finalizeRecording;
+      recorder.start();
+    } catch (_) { recorder = null; }
+  }
+
+  ws = new WebSocket(wsUrl(room));
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => { setStatus("playing", "ok"); pingLoop(); };
+  ws.onclose = () => { setStatus("stopped", "bad"); stop(); };
+  ws.onerror = () => setStatus("error", "bad");
+  ws.onmessage = (ev) => {
+    if (typeof ev.data === "string") { handleControl(JSON.parse(ev.data)); return; }
+    mixFrame(ev.data);
+  };
+
+  on = true; muted = false;
+  $("go").textContent = "Stop";
+  $("go").classList.add("on");
+  $("mute").hidden = false;
+  $("saved").style.display = "none";
+}
+
+function clip(x) { return x > 1 ? 1 : x < -1 ? -1 : x; }
+
+// Decode one relayed frame: [channelCode, slot] header + Int16 PCM, mix into the
+// shared ring at this mic's own write position (several mics sum together).
+function mixFrame(arrbuf) {
+  if (!ringL) return;
+  const head = new Uint8Array(arrbuf, 0, 2);
+  const slot = head[1];
+  const pcm = new Int16Array(arrbuf, 2);
+  let w = writers[slot];
+  const leadSamples = Math.floor(JITTER_LEAD * SAMPLE_RATE);
+  if (!w || w.pos < readPos + (leadSamples >> 2)) {
+    w = writers[slot] = { pos: readPos + leadSamples };
+  }
+  w.lastFrame = performance.now();
+  for (let i = 0; i < pcm.length; i++) {
+    const s = pcm[i] / 0x8000;
+    const idx = w.pos % ringLen;
+    ringL[idx] += s; ringR[idx] += s; // mono mic -> centre of the mix
+    w.pos++;
+  }
+  const buffered = Math.max(0, (w.pos - readPos) / SAMPLE_RATE);
+  updateLatency(buffered * 1000);
+}
+
+function updateLatency(bufMs) {
+  let word, cls;
+  if (bufMs < 250) { word = "Excellent"; cls = "ok"; }
+  else if (bufMs < 500) { word = "Good"; cls = "warn"; }
+  else { word = "Too much delay"; cls = "bad"; }
+  setPill("lat", `${word} · ${Math.round(bufMs)} ms`, cls);
+}
+
+function handleControl(msg) {
+  if (msg.type === "pong") return;
+  if (msg.type !== "roster") return;
+  $("mics").textContent = msg.publishers.length;
+  const ul = $("miclist"); ul.innerHTML = "";
+  for (const p of msg.publishers) {
+    const [stateText, stateCls] = micState(p);
+    const li = document.createElement("li");
+    li.innerHTML = `<span class="nm">${escapeHtml(p.name)}</span>` +
+      `<span class="pill ${stateCls}">${stateText}</span>`;
+    ul.appendChild(li);
+  }
+}
+
+function micState(p) {
+  if (p.muted) return ["muted", "muted"];
+  if (p.connection === "lost") return ["disconnected", "bad"];
+  if (p.connection === "weak") return ["weak connection", "warn"];
+  if (p.latency_ms != null && p.latency_ms > 600) return ["high delay", "warn"];
+  if (p.level != null && p.level > 0.02) return ["streaming", "ok"];
+  return ["connected", "ok"];
+}
+
+function pingLoop() {
+  if (!ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({ type: "ping", t: performance.now() }));
+  setTimeout(pingLoop, 2500);
+}
+
+function finalizeRecording() {
+  if (!recChunks.length) return;
+  const blob = new Blob(recChunks, { type: recChunks[0].type || "audio/webm" });
+  const url = URL.createObjectURL(blob);
+  $("savedAudio").src = url;
+  const a = $("savedLink");
+  a.href = url;
+  a.download = "live-mix" + (blob.type.includes("mp4") ? ".m4a" : ".webm");
+  $("saved").style.display = "block";
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function stop() {
+  on = false;
+  $("go").textContent = "Start";
+  $("go").classList.remove("on");
+  $("mute").hidden = true;
+  $("mics").textContent = "0";
+  $("miclist").innerHTML = "";
+  setStatus("stopped", "bad");
+  setPill("lat", "—", "warn");
+  try { if (recorder && recorder.state !== "inactive") recorder.stop(); } catch (_) {}
+  recorder = null;
+  try { mixer && mixer.disconnect(); } catch (_) {}
+  if (chain) { for (const n of chain.nodes) { try { n.disconnect(); } catch (_) {} } }
+  try { masterGain && masterGain.disconnect(); } catch (_) {}
+  try { ws && ws.close(); } catch (_) {}
+  try { ctx && ctx.close(); } catch (_) {}
+}
+
+$("go").onclick = start;
+$("mute").onclick = () => {
+  muted = !muted;
+  $("mute").textContent = muted ? "Unmute output" : "Mute output";
+  $("mute").style.background = muted ? "#b45309" : "#334155";
+  if (masterGain && ctx) masterGain.gain.setTargetAtTime(
+    (muted ? 0 : 1) * (Number($("vol").value) / 100), ctx.currentTime, 0.02);
+};
+window.addEventListener("pagehide", stop);
+</script>
+</body>
+</html>

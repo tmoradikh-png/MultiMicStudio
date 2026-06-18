@@ -54,9 +54,17 @@ def live_publish_page() -> FileResponse:
 
 @router.get("/mic")
 def live_mic_page() -> FileResponse:
-    """Single-phone live microphone: capture -> process -> play out of whatever is
-    connected to THIS phone (Bluetooth speaker / wired). No room, no listener."""
+    """A phone acting as one of the live microphones in a room. Streams its mic to
+    the room; the Speaker device gathers + mixes + processes all mics."""
     return FileResponse(str(_STATIC_DIR / "live_mic.html"))
+
+
+@router.get("/speaker")
+def live_speaker_page() -> FileResponse:
+    """The output device: gathers every mic in the room, mixes them, processes the
+    mix live with the chosen preset, and plays it out the connected speaker
+    (Bluetooth / wired). Optional live recording."""
+    return FileResponse(str(_STATIC_DIR / "live_speaker.html"))
 
 
 @router.get("/listen")

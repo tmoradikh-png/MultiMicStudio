@@ -44,10 +44,10 @@ export default function HomeScreen({ navigation }: Props) {
       </Pressable>
 
       <Pressable style={styles.card} onPress={() => navigation.navigate("Live")}>
-        <Text style={[styles.title, { fontSize: 20 }]}>🔊 Live microphone</Text>
+        <Text style={[styles.title, { fontSize: 20 }]}>🔊 Live sound</Text>
         <Text style={styles.subtitle}>
-          Use this phone as a live mic — your voice plays straight out of a
-          connected Bluetooth speaker or wired headphones/speaker.
+          Use several phones as live mics — their sound is mixed and processed live
+          (Studio, Podcast, Party…) and played out a connected speaker.
         </Text>
       </Pressable>
 
