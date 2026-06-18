@@ -103,6 +103,15 @@ async function authHeaders(): Promise<Record<string, string>> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+// Called when a request authenticated with an ACCOUNT token is rejected (401),
+// i.e. the stored sign-in has expired. The app registers this (AuthContext) to
+// clear the dead token and drop the user back to the login screen, instead of
+// leaving them on a logged-in screen where every action mysteriously fails.
+let authExpiredHandler: (() => void) | null = null;
+export function setAuthExpiredHandler(cb: (() => void) | null): void {
+  authExpiredHandler = cb;
+}
+
 // A network/HTTP failure with the status preserved, so the UI can show a clear,
 // specific message (unreachable backend vs. bad code vs. expired session, etc).
 // status 0 means the request never reached the server (no connection / wrong host).
@@ -136,6 +145,13 @@ async function handle<T>(res: Response): Promise<T> {
     } catch {
       // ignore non-JSON error bodies
     }
+    // A 401 on a request that carried an ACCOUNT token means that sign-in has
+    // expired — clear it and bounce to login (guests have no account token, so
+    // their join/upload flows are left untouched).
+    if (res.status === 401 && authExpiredHandler) {
+      const account = await getToken();
+      if (account) authExpiredHandler();
+    }
     throw new ApiError(
       res.status,
       typeof detail === "string" ? detail : "Request failed",
@@ -153,7 +169,7 @@ export function describeError(err: unknown): string {
       case err.status === 0:
         return "Can't reach the server. Check your Wi‑Fi and that the host's backend is running, then try again.";
       case err.status === 401:
-        return "Your session access expired. Re‑join with the session code to continue.";
+        return "Your sign‑in expired. Please log in again.";
       case err.status === 403:
         return "You don't have access to this session.";
       case err.status === 404:
@@ -273,6 +289,16 @@ export const api = {
       body: JSON.stringify({ email, name, password }),
     });
     return handle<AuthToken>(res);
+  },
+
+  // Lightweight token check: resolves when the stored account token is still
+  // valid, throws an ApiError(401) when it has expired. Used at app startup so a
+  // dead token never lands the user on a logged-in screen where actions fail.
+  async me(): Promise<{ id: string; email: string; name: string }> {
+    const res = await safeFetch(`${API_BASE_URL}/auth/me`, {
+      headers: await authHeaders(),
+    });
+    return handle<{ id: string; email: string; name: string }>(res);
   },
 
   async login(email: string, password: string): Promise<AuthToken> {

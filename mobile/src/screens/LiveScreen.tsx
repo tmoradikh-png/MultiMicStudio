@@ -45,6 +45,7 @@ export default function LiveScreen(_props: Props) {
   const [room, setRoom] = useState("");
   const [name, setName] = useState("");
   const [mode, setMode] = useState("natural");
+  const [streamLive, setStreamLive] = useState(true);
   const [save, setSave] = useState(false);
   const [live, setLive] = useState(false);
 
@@ -54,10 +55,13 @@ export default function LiveScreen(_props: Props) {
       const who = encodeURIComponent(name.trim() || "Mic");
       return `${LIVE_BASE_URL}/live/mic?room=${code}&name=${who}`;
     }
-    return `${LIVE_BASE_URL}/live/speaker?room=${code}&mode=${mode}${save ? "&save=1" : ""}`;
-  }, [role, room, name, mode, save]);
+    return `${LIVE_BASE_URL}/live/speaker?room=${code}&mode=${mode}&play=${
+      streamLive ? 1 : 0
+    }${save ? "&save=1" : ""}`;
+  }, [role, room, name, mode, streamLive, save]);
 
-  const canGoLive = room.trim().length >= 3;
+  const canGoLive =
+    room.trim().length >= 3 && (role === "mic" || streamLive || save);
   // getUserMedia (the mic) is only granted on a secure (https) origin.
   const micBlocked = role === "mic" && !LIVE_IS_SECURE;
 
@@ -88,7 +92,7 @@ export default function LiveScreen(_props: Props) {
           onPress={() => setLive(false)}
         >
           <Text style={styles.buttonText}>
-            {role === "mic" ? "Stop mic" : "Stop speaker"}
+            {role === "mic" ? "Stop mic" : "Stop"}
           </Text>
         </Pressable>
       </View>
@@ -102,9 +106,9 @@ export default function LiveScreen(_props: Props) {
     >
       <Text style={styles.title}>Live sound</Text>
       <Text style={styles.subtitle}>
-        Use several phones as wireless mics. Their sound is gathered, mixed and
-        processed live, then played out of one speaker phone. Put the same room
-        code on every device.
+        Use several phones as wireless mics. One device gathers and mixes them, then
+        streams the result live to a speaker and/or saves a recording. Put the same
+        room code on every device.
       </Text>
 
       <Text style={styles.label}>This phone is the…</Text>
@@ -114,9 +118,9 @@ export default function LiveScreen(_props: Props) {
           onPress={() => setRole("speaker")}
         >
           <Text style={[chipText, role === "speaker" && chipTextActive]}>
-            🔊 Speaker
+            🎛️ Mixer
           </Text>
-          <Text style={chipSub}>plays the mix</Text>
+          <Text style={chipSub}>stream &/or save</Text>
         </Pressable>
         <Pressable
           style={[chip, role === "mic" && chipActive]}
@@ -156,17 +160,57 @@ export default function LiveScreen(_props: Props) {
         </>
       ) : (
         <>
-          <View style={[styles.card, { marginTop: 16 }]}>
-            <Text style={{ color: colors.text, fontWeight: "700", marginBottom: 6 }}>
-              🔌 Connect your speaker first
-            </Text>
-            <Text style={{ color: colors.muted, fontSize: 13, lineHeight: 20 }}>
-              Pair a Bluetooth speaker or plug in a wired speaker/headphones on this
-              phone. The live mix follows this phone's audio output.
-            </Text>
+          <Text style={styles.label}>What to do with the mix</Text>
+          <View
+            style={[
+              styles.card,
+              { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+            ]}
+          >
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={{ color: colors.text, fontSize: 16, fontWeight: "600" }}>
+                ▶️ Stream live to a speaker
+              </Text>
+              <Text style={{ color: colors.muted, fontSize: 13, marginTop: 2 }}>
+                Play it out this device's connected Bluetooth / wired speaker, in
+                real time.
+              </Text>
+            </View>
+            <Switch
+              value={streamLive}
+              onValueChange={setStreamLive}
+              trackColor={{ true: colors.primary, false: colors.border }}
+            />
           </View>
 
-          <Text style={styles.label}>Live sound</Text>
+          <View
+            style={[
+              styles.card,
+              { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+            ]}
+          >
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={{ color: colors.text, fontSize: 16, fontWeight: "600" }}>
+                💾 Save a recording
+              </Text>
+              <Text style={{ color: colors.muted, fontSize: 13, marginTop: 2 }}>
+                Keep a file of the processed mix to download when you stop.
+              </Text>
+            </View>
+            <Switch
+              value={save}
+              onValueChange={setSave}
+              trackColor={{ true: colors.primary, false: colors.border }}
+            />
+          </View>
+
+          {!streamLive && !save && (
+            <Text style={{ color: colors.danger, fontSize: 13, marginTop: 4 }}>
+              Pick at least one: stream live, save, or both.
+            </Text>
+          )}
+
+          <Text style={styles.label}>Sound (applies live AND to the saved file)</Text>
           {PRESETS.map((p) => (
             <Pressable
               key={p.id}
@@ -196,25 +240,18 @@ export default function LiveScreen(_props: Props) {
             </Pressable>
           ))}
 
-          <View
-            style={[
-              styles.card,
-              { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-            ]}
-          >
-            <View style={{ flex: 1, paddingRight: 12 }}>
-              <Text style={{ color: colors.text, fontSize: 16, fontWeight: "600" }}>
-                Save the live mix
-              </Text>
-              <Text style={{ color: colors.muted, fontSize: 13, marginTop: 2 }}>
-                Also keep a recording of what plays out.
-              </Text>
-            </View>
-            <Switch
-              value={save}
-              onValueChange={setSave}
-              trackColor={{ true: colors.primary, false: colors.border }}
-            />
+          <View style={[styles.card, { marginTop: 4 }]}>
+            <Text style={{ color: colors.text, fontWeight: "700", marginBottom: 6 }}>
+              🖥️ Want it on a PC instead?
+            </Text>
+            <Text style={{ color: colors.muted, fontSize: 13, lineHeight: 20 }}>
+              Open this same link in your computer's browser — the PC then becomes
+              the mixer, plays the sound and can save the file. To make it appear as
+              a <Text style={{ color: colors.text }}>microphone device</Text> inside
+              Zoom / OBS / a recorder (synced with your camera), you also need a free
+              virtual-audio app on the PC (e.g. VB-Audio Cable) and route the browser
+              tab into it. The phone alone can't register as a system mic.
+            </Text>
           </View>
         </>
       )}
@@ -238,7 +275,11 @@ export default function LiveScreen(_props: Props) {
         onPress={() => setLive(true)}
       >
         <Text style={styles.buttonText}>
-          {role === "mic" ? "Go live (mic)" : "Start speaker"}
+          {role === "mic"
+            ? "Go live (mic)"
+            : streamLive
+              ? "Start mixing"
+              : "Start (save only)"}
         </Text>
       </Pressable>
 

@@ -52,17 +52,18 @@
 </head>
 <body>
   <div class="wrap">
-    <h1>🔊 Live speaker</h1>
+    <h1>🔊 Live output</h1>
     <p class="sub">
-      This device gathers every microphone in the room, mixes them, processes them
-      live with the sound you choose, and plays the result out of whatever is
-      connected here — a <strong>Bluetooth speaker</strong> or <strong>wired</strong>
-      output.
+      This device (a phone <strong>or a PC's browser</strong>) gathers every
+      microphone in the room, mixes them and processes them live with the sound you
+      choose. You can <strong>play it out</strong> of whatever speaker is connected
+      here, <strong>save a recording</strong>, or both.
     </p>
 
     <div class="out">
-      🔌 <strong>Output:</strong> connect your speaker first (pair Bluetooth or plug
-      in wired) — the live mix follows this device's audio output.
+      🔌 <strong>To play out loud:</strong> pair a Bluetooth speaker or plug in a
+      wired one first — the live mix follows this device's audio output. For
+      record-only, untick "play the mix out" below.
     </div>
 
     <label for="room">Room code (same as the microphones)</label>
@@ -75,8 +76,12 @@
     <button id="mute" hidden>Mute output</button>
 
     <label class="toggle">
+      <input id="playout" type="checkbox" checked />
+      Play the live mix out this device's speaker
+    </label>
+    <label class="toggle">
       <input id="save" type="checkbox" />
-      Also save a recording of the live mix
+      Save a recording of the mix (download when you stop)
     </label>
 
     <label for="vol">Volume</label>
@@ -121,7 +126,7 @@ const PRESETS = [
 ];
 let mode = localStorage.getItem("mm_live_mode") || "natural";
 
-let ws, ctx, mixer, masterGain, chain, analyser, on = false, muted = false;
+let ws, ctx, mixer, masterGain, outGain, chain, analyser, on = false, muted = false, playOut = true;
 let recDest, recorder, recChunks = [];
 // Stereo ring + one write head per mic (slot) so several phones mix together.
 let ringL, ringR, ringLen, readPos = 0;
@@ -132,6 +137,8 @@ const _qp = new URLSearchParams(location.search);
 if (_qp.get("room")) $("room").value = _qp.get("room").toUpperCase();
 if (_qp.get("mode")) mode = _qp.get("mode");
 if (_qp.get("save") === "1") $("save").checked = true;
+// play=0 -> don't drive the physical speaker (record / monitor only).
+if (_qp.get("play") === "0") $("playout").checked = false;
 
 function setStatus(t, cls) { const s = $("st"); s.textContent = t; s.className = "pill " + cls; }
 function setPill(id, t, cls) { const e = $(id); e.textContent = t; e.className = "pill " + cls; }
@@ -160,8 +167,8 @@ setPill("soundp", presetName(mode), "muted");
 
 $("vol").oninput = () => {
   $("volval").textContent = $("vol").value + "%";
-  if (masterGain && ctx) masterGain.gain.setTargetAtTime(
-    (muted ? 0 : 1) * (Number($("vol").value) / 100), ctx.currentTime, 0.03);
+  if (outGain && ctx) outGain.gain.setTargetAtTime(
+    playOut ? (muted ? 0 : 1) * (Number($("vol").value) / 100) : 0, ctx.currentTime, 0.03);
 };
 
 function wsUrl(room) {
@@ -226,6 +233,10 @@ async function start() {
   if (on) { stop(); return; }
   const room = $("room").value.trim();
   if (!room) { alert("Enter the room code first."); return; }
+  if (!$("playout").checked && !$("save").checked) {
+    alert("Choose to play the mix out the speaker, save a recording, or both.");
+    return;
+  }
   localStorage.setItem("mm_live_room", room);
 
   ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
@@ -249,11 +260,19 @@ async function start() {
       readPos++;
     }
   };
+  // masterGain is the full-mix bus (unity). The recorder taps it directly, so a
+  // "save only" session still captures full audio even while the speaker is silent.
   masterGain = ctx.createGain();
-  masterGain.gain.value = (muted ? 0 : 1) * (Number($("vol").value) / 100);
+  masterGain.gain.value = 1;
+  // outGain drives the physical speaker only — the "play out" choice, volume and
+  // mute live here and never touch the recording.
+  playOut = $("playout").checked;
+  outGain = ctx.createGain();
+  outGain.gain.value = playOut ? (muted ? 0 : 1) * (Number($("vol").value) / 100) : 0;
   analyser = ctx.createAnalyser(); analyser.fftSize = 1024;
   rebuildChain();
-  masterGain.connect(ctx.destination);
+  masterGain.connect(outGain);
+  outGain.connect(ctx.destination);
   masterGain.connect(analyser);
 
   if ($("save").checked && window.MediaRecorder) {
@@ -272,7 +291,7 @@ async function start() {
 
   ws = new WebSocket(wsUrl(room));
   ws.binaryType = "arraybuffer";
-  ws.onopen = () => { setStatus("playing", "ok"); pingLoop(); };
+  ws.onopen = () => { setStatus(playOut ? "playing" : "recording", "ok"); pingLoop(); };
   ws.onclose = () => { setStatus("stopped", "bad"); stop(); };
   ws.onerror = () => setStatus("error", "bad");
   ws.onmessage = (ev) => {
@@ -379,6 +398,7 @@ function stop() {
   try { mixer && mixer.disconnect(); } catch (_) {}
   if (chain) { for (const n of chain.nodes) { try { n.disconnect(); } catch (_) {} } }
   try { masterGain && masterGain.disconnect(); } catch (_) {}
+  try { outGain && outGain.disconnect(); } catch (_) {}
   try { ws && ws.close(); } catch (_) {}
   try { ctx && ctx.close(); } catch (_) {}
 }
@@ -388,8 +408,8 @@ $("mute").onclick = () => {
   muted = !muted;
   $("mute").textContent = muted ? "Unmute output" : "Mute output";
   $("mute").style.background = muted ? "#b45309" : "#334155";
-  if (masterGain && ctx) masterGain.gain.setTargetAtTime(
-    (muted ? 0 : 1) * (Number($("vol").value) / 100), ctx.currentTime, 0.02);
+  if (outGain && ctx) outGain.gain.setTargetAtTime(
+    playOut ? (muted ? 0 : 1) * (Number($("vol").value) / 100) : 0, ctx.currentTime, 0.02);
 };
 window.addEventListener("pagehide", stop);
 </script>
