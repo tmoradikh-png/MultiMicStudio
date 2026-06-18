@@ -38,6 +38,14 @@ app.include_router(sessions.router)
 app.include_router(recordings.router)
 app.include_router(projects.router)
 
+# Live Speaker mode (real-time relay) is mounted only when explicitly enabled, so
+# the default offline product is byte-for-byte unaffected. See app/live/ and
+# docs/ARCHITECTURE_HOSTING_AND_LIVE_MODE.md.
+if settings.live_mode_enabled:
+    from app.routers import live as live_router
+
+    app.include_router(live_router.router)
+
 
 @app.get("/health", tags=["meta"])
 def health() -> dict[str, str]:

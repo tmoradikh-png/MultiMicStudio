@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>MultiMic — Live Mic</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, "Segoe UI", Arial, sans-serif; margin: 0;
+    background: #0f1419; color: #e6e6e6; }
+  .wrap { max-width: 520px; margin: 0 auto; padding: 24px 20px 60px; }
+  h1 { font-size: 20px; margin: 0 0 16px; }
+  label { display: block; font-size: 13px; color: #9aa4af; margin: 12px 0 4px; }
+  input, select { width: 100%; box-sizing: border-box; padding: 11px 12px;
+    background: #1a212b; border: 1px solid #2a3441; border-radius: 9px;
+    color: #e6e6e6; font-size: 15px; }
+  button { width: 100%; margin-top: 18px; padding: 14px; border: 0;
+    border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer; }
+  #go { background: #16a34a; color: #fff; }
+  #go.live { background: #dc2626; }
+  #mute { background: #334155; color: #e6e6e6; margin-top: 10px; }
+  .row { display: flex; gap: 10px; }
+  .row > div { flex: 1; }
+  .status { margin-top: 18px; background: #1a212b; border: 1px solid #2a3441;
+    border-radius: 10px; padding: 14px; font-size: 14px; }
+  .status .line { display: flex; justify-content: space-between; padding: 3px 0; }
+  .status .k { color: #8b96a2; }
+  .meter { height: 10px; background: #0b0f14; border-radius: 6px; overflow: hidden;
+    margin-top: 8px; }
+  .meter > div { height: 100%; width: 0%; background: #22c55e; transition: width .08s; }
+  .pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; }
+  .ok { background: #064e3b; color: #6ee7b7; }
+  .bad { background: #7f1d1d; color: #fca5a5; }
+  .warn { background: #78350f; color: #fcd34d; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>🎙️ Live microphone</h1>
+
+    <label for="room">Room code (share this with the listener)</label>
+    <input id="room" autocapitalize="characters" autocomplete="off" placeholder="e.g. PARTY1" />
+
+    <div class="row">
+      <div>
+        <label for="name">Your name</label>
+        <input id="name" autocomplete="off" placeholder="Mic 1" />
+      </div>
+      <div>
+        <label for="channel">Stereo side</label>
+        <select id="channel">
+          <option value="mono">Mono (center)</option>
+          <option value="left">Left (Phone A)</option>
+          <option value="right">Right (Phone B)</option>
+        </select>
+      </div>
+    </div>
+
+    <button id="go">Go live</button>
+    <button id="mute" hidden>Mute</button>
+
+    <div class="status">
+      <div class="line"><span class="k">Status</span><span id="st" class="pill bad">offline</span></div>
+      <div class="line"><span class="k">Listeners</span><span id="listeners">0</span></div>
+      <div class="line"><span class="k">Latency</span><span id="lat">—</span></div>
+      <div class="line"><span class="k">Mic level</span><span id="lvl">0%</span></div>
+      <div class="meter"><div id="bar"></div></div>
+    </div>
+  </div>
+
+<script>
+const SAMPLE_RATE = 48000;
+const $ = (id) => document.getElementById(id);
+let ws, ctx, source, processor, stream, live = false, muted = false;
+let lastPing = 0;
+
+// Restore last room/name for convenience.
+$("room").value = localStorage.getItem("mm_live_room") || "";
+$("name").value = localStorage.getItem("mm_live_name") || "";
+
+function setStatus(text, cls) { const s = $("st"); s.textContent = text; s.className = "pill " + cls; }
+
+function wsUrl(room, name, channel) {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const q = new URLSearchParams({ role: "publisher", name, channel });
+  return `${proto}://${location.host}/live/ws/${encodeURIComponent(room)}?${q}`;
+}
+
+async function goLive() {
+  if (live) { stop(); return; }
+  const room = $("room").value.trim();
+  if (!room) { alert("Enter a room code first."); return; }
+  const name = $("name").value.trim();
+  const channel = $("channel").value;
+  localStorage.setItem("mm_live_room", room);
+  localStorage.setItem("mm_live_name", name);
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+  } catch (e) {
+    setStatus("mic blocked", "bad");
+    alert("Microphone permission denied or unavailable.\n\n" + e);
+    return;
+  }
+
+  ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+  await ctx.resume();
+  source = ctx.createMediaStreamSource(stream);
+  processor = ctx.createScriptProcessor(2048, 1, 1);
+
+  ws = new WebSocket(wsUrl(room, name, channel));
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => { setStatus("LIVE", "ok"); pingLoop(); };
+  ws.onclose = () => { setStatus("offline", "bad"); stop(); };
+  ws.onerror = () => setStatus("error", "bad");
+  ws.onmessage = (ev) => {
+    if (typeof ev.data !== "string") return;
+    const msg = JSON.parse(ev.data);
+    if (msg.type === "roster") $("listeners").textContent = msg.listeners.length;
+    if (msg.type === "pong" && msg.t) {
+      const rtt = Math.round(performance.now() - msg.t);
+      $("lat").textContent = rtt + " ms" + (rtt > 400 ? " (high)" : "");
+      sendStatus({ latency_ms: rtt, connection: rtt > 600 ? "weak" : "stable" });
+    }
+  };
+
+  processor.onaudioprocess = (e) => {
+    const input = e.inputBuffer.getChannelData(0);
+    // Mic level meter (RMS).
+    let sum = 0;
+    for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
+    const rms = Math.sqrt(sum / input.length);
+    const pct = Math.min(100, Math.round(rms * 300));
+    $("bar").style.width = pct + "%";
+    $("lvl").textContent = pct + "%";
+
+    if (!ws || ws.readyState !== 1 || muted) return;
+    const pcm = new Int16Array(input.length);
+    for (let i = 0; i < input.length; i++) {
+      let s = Math.max(-1, Math.min(1, input[i]));
+      pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    ws.send(pcm.buffer);
+  };
+
+  source.connect(processor);
+  processor.connect(ctx.destination); // keep the graph alive (output is silent mic)
+  live = true;
+  $("go").textContent = "Stop";
+  $("go").classList.add("live");
+  $("mute").hidden = false;
+}
+
+function sendStatus(obj) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "status", ...obj }));
+}
+function pingLoop() {
+  if (!ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({ type: "ping", t: performance.now() }));
+  setTimeout(pingLoop, 2000);
+}
+
+function stop() {
+  live = false;
+  $("go").textContent = "Go live";
+  $("go").classList.remove("live");
+  $("mute").hidden = true;
+  $("bar").style.width = "0%";
+  try { processor && processor.disconnect(); } catch (_) {}
+  try { source && source.disconnect(); } catch (_) {}
+  try { stream && stream.getTracks().forEach((t) => t.stop()); } catch (_) {}
+  try { ctx && ctx.close(); } catch (_) {}
+  try { ws && ws.close(); } catch (_) {}
+}
+
+$("go").onclick = goLive;
+$("mute").onclick = () => {
+  muted = !muted;
+  $("mute").textContent = muted ? "Unmute" : "Mute";
+  $("mute").style.background = muted ? "#b45309" : "#334155";
+  sendStatus({ muted });
+};
+window.addEventListener("pagehide", stop);
+</script>
+</body>
+</html>

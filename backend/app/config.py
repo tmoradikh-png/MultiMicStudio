@@ -67,11 +67,38 @@ class Settings(BaseSettings):
     # separate milestone (see docs/ARCHITECTURE_HOSTING_AND_LIVE_MODE.md).
     live_mode_enabled: bool = False
 
+    # ICE servers offered to clients for a FUTURE low-latency WebRTC path. The
+    # Phase L0 relay does not use these (it streams through the server), but the
+    # UI fetches them so the WebRTC upgrade needs no client change. Add a TURN
+    # entry here to make cross-network (4G) WebRTC work later, e.g.:
+    #   "stun:stun.l.google.com:19302,turn:user:pass@turn.example.com:3478"
+    live_ice_servers: str = "stun:stun.l.google.com:19302"
+
     cors_origins: str = "http://localhost:3000,http://localhost:19006"
 
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def live_ice_server_list(self) -> list[dict]:
+        """ICE servers in the WebRTC RTCConfiguration JSON shape."""
+        servers: list[dict] = []
+        for entry in self.live_ice_servers.split(","):
+            url = entry.strip()
+            if not url:
+                continue
+            if url.startswith(("turn:", "turns:")) and "@" in url:
+                # turn:user:pass@host:port -> {urls, username, credential}
+                scheme, rest = url.split(":", 1)
+                creds, host = rest.rsplit("@", 1)
+                user, _, password = creds.partition(":")
+                servers.append(
+                    {"urls": f"{scheme}:{host}", "username": user, "credential": password}
+                )
+            else:
+                servers.append({"urls": url})
+        return servers
 
     @property
     def signing_key(self) -> str:

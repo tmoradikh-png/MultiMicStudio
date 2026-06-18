@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>MultiMic — Live Listen</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, "Segoe UI", Arial, sans-serif; margin: 0;
+    background: #0f1419; color: #e6e6e6; }
+  .wrap { max-width: 520px; margin: 0 auto; padding: 24px 20px 60px; }
+  h1 { font-size: 20px; margin: 0 0 16px; }
+  label { display: block; font-size: 13px; color: #9aa4af; margin: 12px 0 4px; }
+  input { width: 100%; box-sizing: border-box; padding: 11px 12px;
+    background: #1a212b; border: 1px solid #2a3441; border-radius: 9px;
+    color: #e6e6e6; font-size: 15px; }
+  button { width: 100%; margin-top: 18px; padding: 14px; border: 0;
+    border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer; }
+  #go { background: #2563eb; color: #fff; }
+  #go.on { background: #dc2626; }
+  .status { margin-top: 18px; background: #1a212b; border: 1px solid #2a3441;
+    border-radius: 10px; padding: 14px; font-size: 14px; }
+  .line { display: flex; justify-content: space-between; padding: 3px 0; }
+  .k { color: #8b96a2; }
+  .pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; }
+  .ok { background: #064e3b; color: #6ee7b7; }
+  .bad { background: #7f1d1d; color: #fca5a5; }
+  .warn { background: #78350f; color: #fcd34d; }
+  ul { list-style: none; padding: 0; margin: 8px 0 0; }
+  li { display: flex; justify-content: space-between; font-size: 13px; padding: 4px 0;
+    border-top: 1px solid #232c38; }
+  .note { font-size: 12px; color: #6b7480; margin-top: 14px; line-height: 1.5; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>🔊 Live listener</h1>
+
+    <label for="room">Room code (same as the microphone)</label>
+    <input id="room" autocapitalize="characters" autocomplete="off" placeholder="e.g. PARTY1" />
+    <label for="name">This device's name</label>
+    <input id="name" autocomplete="off" placeholder="Speaker" />
+
+    <button id="go">Start listening</button>
+
+    <div class="status">
+      <div class="line"><span class="k">Status</span><span id="st" class="pill bad">stopped</span></div>
+      <div class="line"><span class="k">Buffer</span><span id="buf">—</span></div>
+      <div class="line"><span class="k">Microphones</span><span id="mics">0</span></div>
+      <ul id="miclist"></ul>
+    </div>
+
+    <div class="note">
+      Tip: to play on a Bluetooth speaker, pair this device to the speaker first
+      (phone/PC settings), then press Start — the live sound follows the system output.
+    </div>
+  </div>
+
+<script>
+const SAMPLE_RATE = 48000;
+const JITTER_LEAD = 0.18; // seconds of buffer before playback (smooths network jitter)
+const $ = (id) => document.getElementById(id);
+let ws, ctx, on = false, playHead = 0;
+
+$("room").value = localStorage.getItem("mm_live_room") || "";
+$("name").value = localStorage.getItem("mm_listen_name") || "Speaker";
+
+function setStatus(t, cls) { const s = $("st"); s.textContent = t; s.className = "pill " + cls; }
+
+function wsUrl(room, name) {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const q = new URLSearchParams({ role: "listener", name });
+  return `${proto}://${location.host}/live/ws/${encodeURIComponent(room)}?${q}`;
+}
+
+async function start() {
+  if (on) { stop(); return; }
+  const room = $("room").value.trim();
+  if (!room) { alert("Enter the room code first."); return; }
+  const name = $("name").value.trim();
+  localStorage.setItem("mm_live_room", room);
+  localStorage.setItem("mm_listen_name", name);
+
+  ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+  await ctx.resume(); // requires the user gesture from this click
+  playHead = 0;
+
+  ws = new WebSocket(wsUrl(room, name));
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => setStatus("listening", "ok");
+  ws.onclose = () => { setStatus("stopped", "bad"); stop(); };
+  ws.onerror = () => setStatus("error", "bad");
+  ws.onmessage = (ev) => {
+    if (typeof ev.data === "string") { handleControl(JSON.parse(ev.data)); return; }
+    playFrame(new Int16Array(ev.data));
+  };
+
+  on = true;
+  $("go").textContent = "Stop";
+  $("go").classList.add("on");
+}
+
+function handleControl(msg) {
+  if (msg.type === "roster") {
+    $("mics").textContent = msg.publishers.length;
+    const ul = $("miclist");
+    ul.innerHTML = "";
+    for (const p of msg.publishers) {
+      const li = document.createElement("li");
+      const side = p.channel !== "mono" ? ` (${p.channel})` : "";
+      const state = p.muted ? "muted" : "live";
+      li.innerHTML = `<span>${p.name}${side}</span><span class="pill ${p.muted ? "warn" : "ok"}">${state}</span>`;
+      ul.appendChild(li);
+    }
+  }
+}
+
+function playFrame(pcm) {
+  if (!ctx) return;
+  const f32 = new Float32Array(pcm.length);
+  for (let i = 0; i < pcm.length; i++) f32[i] = pcm[i] / 0x8000;
+  const buffer = ctx.createBuffer(1, f32.length, SAMPLE_RATE);
+  buffer.copyToChannel(f32, 0);
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  src.connect(ctx.destination);
+
+  const now = ctx.currentTime;
+  if (playHead < now + 0.02) playHead = now + JITTER_LEAD; // (re)prime the buffer
+  src.start(playHead);
+  playHead += buffer.duration;
+  $("buf").textContent = Math.round((playHead - now) * 1000) + " ms";
+}
+
+function stop() {
+  on = false;
+  $("go").textContent = "Start listening";
+  $("go").classList.remove("on");
+  $("mics").textContent = "0";
+  $("miclist").innerHTML = "";
+  try { ws && ws.close(); } catch (_) {}
+  try { ctx && ctx.close(); } catch (_) {}
+}
+
+$("go").onclick = start;
+window.addEventListener("pagehide", stop);
+</script>
+</body>
+</html>
