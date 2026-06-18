@@ -28,6 +28,10 @@ from fastapi import WebSocket
 PeerRole = Literal["publisher", "listener"]
 Channel = Literal["mono", "left", "right"]
 
+# Channel codes carried in the 2-byte frame header (see ``relay_audio``). Kept in
+# sync with the listener page's parser.
+_CHANNEL_CODE: dict[str, int] = {"mono": 0, "left": 1, "right": 2}
+
 
 @dataclass
 class Peer:
@@ -39,6 +43,10 @@ class Peer:
     channel: Channel
     ws: WebSocket
     joined_at: float = field(default_factory=time.time)
+    # Stable small integer (0..255) identifying a publisher inside its room. Sent
+    # in every audio frame header so the listener can keep one jitter buffer per
+    # phone and mix several phones together (req F — multi-phone live mode).
+    slot: int = 0
     # Lightweight live status surfaced in the roster (req G — status display).
     muted: bool = False
     level: float = 0.0  # 0..1 recent mic level (publishers only)
@@ -52,6 +60,7 @@ class Peer:
             "role": self.role,
             "name": self.name,
             "channel": self.channel,
+            "slot": self.slot,
             "muted": self.muted,
             "level": round(self.level, 3),
             "latency_ms": self.latency_ms,
@@ -107,6 +116,12 @@ class LiveRegistry:
                 channel=channel,
                 ws=ws,
             )
+            if role == "publisher":
+                used = {p.slot for p in room.publishers()}
+                slot = 0
+                while slot in used and slot < 255:
+                    slot += 1
+                peer.slot = slot
             room.peers[peer.id] = peer
             return peer
 
@@ -132,16 +147,23 @@ class LiveRegistry:
     async def relay_audio(self, room_code: str, sender: Peer, frame: bytes) -> int:
         """Forward one opaque audio frame from a publisher to every listener.
 
-        The first byte channel tag is added by the caller; we just fan out. Returns
-        the number of listeners the frame was delivered to. Dead sockets are ignored
-        (the peer's own receive loop will clean them up on disconnect).
+        A 2-byte routing header ``[channel_code, slot]`` is prepended so the
+        listener can pan the frame (mono/left/right — req E live stereo) and keep a
+        separate jitter buffer per phone to mix several phones (req F). The PCM
+        payload itself is never decoded. The 2-byte header also keeps the Int16 PCM
+        body 2-byte aligned for the browser's ``Int16Array`` view.
+
+        Returns the number of listeners the frame was delivered to. Dead sockets are
+        ignored (the peer's own receive loop cleans them up on disconnect).
         """
         if sender.muted:
             return 0
+        header = bytes((_CHANNEL_CODE.get(sender.channel, 0), sender.slot & 0xFF))
+        out = header + frame
         delivered = 0
         for listener in self._targets(room_code, "listener"):
             try:
-                await listener.ws.send_bytes(frame)
+                await listener.ws.send_bytes(out)
                 delivered += 1
             except Exception:  # noqa: BLE001 — drop on broken socket, keep streaming
                 continue

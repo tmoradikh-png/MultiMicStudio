@@ -20,15 +20,22 @@
   #go.on { background: #dc2626; }
   .status { margin-top: 18px; background: #1a212b; border: 1px solid #2a3441;
     border-radius: 10px; padding: 14px; font-size: 14px; }
-  .line { display: flex; justify-content: space-between; padding: 3px 0; }
+  .line { display: flex; justify-content: space-between; padding: 3px 0; align-items: center; }
   .k { color: #8b96a2; }
   .pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; }
   .ok { background: #064e3b; color: #6ee7b7; }
   .bad { background: #7f1d1d; color: #fca5a5; }
   .warn { background: #78350f; color: #fcd34d; }
+  .muted { background: #3a3f4a; color: #c7ccd4; }
   ul { list-style: none; padding: 0; margin: 8px 0 0; }
-  li { display: flex; justify-content: space-between; font-size: 13px; padding: 4px 0;
-    border-top: 1px solid #232c38; }
+  li { display: flex; justify-content: space-between; align-items: center; font-size: 13px;
+    padding: 6px 0; border-top: 1px solid #232c38; gap: 8px; }
+  li .who { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+  li .who .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tag { font-size: 11px; padding: 1px 6px; border-radius: 5px; background: #1e2a3a;
+    color: #93b4dd; }
+  .tag.L { background: #14233a; color: #7dd3fc; }
+  .tag.R { background: #2a1410; color: #fcd9b8; }
   .note { font-size: 12px; color: #6b7480; margin-top: 14px; line-height: 1.5; }
 </style>
 </head>
@@ -45,27 +52,37 @@
 
     <div class="status">
       <div class="line"><span class="k">Status</span><span id="st" class="pill bad">stopped</span></div>
-      <div class="line"><span class="k">Buffer</span><span id="buf">—</span></div>
+      <div class="line"><span class="k">Latency</span><span id="lat" class="pill warn">—</span></div>
+      <div class="line"><span class="k">Stereo</span><span id="stereo" class="pill muted">—</span></div>
       <div class="line"><span class="k">Microphones</span><span id="mics">0</span></div>
       <ul id="miclist"></ul>
     </div>
 
     <div class="note">
-      Tip: to play on a Bluetooth speaker, pair this device to the speaker first
-      (phone/PC settings), then press Start — the live sound follows the system output.
+      <strong>Bluetooth speaker:</strong> pair this device to the speaker first
+      (phone/PC settings), then press Start — the live sound follows the system
+      output. Left/Right phones play to the correct speaker side automatically.
     </div>
   </div>
 
 <script>
 const SAMPLE_RATE = 48000;
-const JITTER_LEAD = 0.18; // seconds of buffer before playback (smooths network jitter)
+const JITTER_LEAD = 0.18;     // seconds of buffer before playback (smooths jitter)
+const RING_SEC = 6;
 const $ = (id) => document.getElementById(id);
-let ws, ctx, on = false, playHead = 0;
+let ws, ctx, mixer, on = false;
+
+// Stereo ring buffers + one write head per phone (slot). The output node reads a
+// shared timeline, so several phones mix together and L/R land on the right side.
+let ringL, ringR, ringLen, readPos = 0;
+const writers = {};           // slot -> { pos, channel, lastFrame }
+let activeLR = { left: false, right: false };
 
 $("room").value = localStorage.getItem("mm_live_room") || "";
 $("name").value = localStorage.getItem("mm_listen_name") || "Speaker";
 
 function setStatus(t, cls) { const s = $("st"); s.textContent = t; s.className = "pill " + cls; }
+function setPill(id, text, cls) { const e = $(id); e.textContent = text; e.className = "pill " + cls; }
 
 function wsUrl(room, name) {
   const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -83,16 +100,36 @@ async function start() {
 
   ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
   await ctx.resume(); // requires the user gesture from this click
-  playHead = 0;
+
+  // Set up the stereo ring + a 2-channel output node that drains it.
+  ringLen = SAMPLE_RATE * RING_SEC;
+  ringL = new Float32Array(ringLen);
+  ringR = new Float32Array(ringLen);
+  readPos = 0;
+  for (const k in writers) delete writers[k];
+  mixer = ctx.createScriptProcessor(2048, 0, 2);
+  mixer.onaudioprocess = (e) => {
+    const outL = e.outputBuffer.getChannelData(0);
+    const outR = e.outputBuffer.getChannelData(1);
+    for (let i = 0; i < outL.length; i++) {
+      const idx = readPos % ringLen;
+      // Soft-clip the summed mix so several loud phones can't distort.
+      outL[i] = clip(ringL[idx]);
+      outR[i] = clip(ringR[idx]);
+      ringL[idx] = 0; ringR[idx] = 0; // clear after reading (no stale loop)
+      readPos++;
+    }
+  };
+  mixer.connect(ctx.destination);
 
   ws = new WebSocket(wsUrl(room, name));
   ws.binaryType = "arraybuffer";
-  ws.onopen = () => setStatus("listening", "ok");
+  ws.onopen = () => { setStatus("listening", "ok"); pingLoop(); };
   ws.onclose = () => { setStatus("stopped", "bad"); stop(); };
   ws.onerror = () => setStatus("error", "bad");
   ws.onmessage = (ev) => {
     if (typeof ev.data === "string") { handleControl(JSON.parse(ev.data)); return; }
-    playFrame(new Int16Array(ev.data));
+    mixFrame(ev.data);
   };
 
   on = true;
@@ -100,36 +137,96 @@ async function start() {
   $("go").classList.add("on");
 }
 
-function handleControl(msg) {
-  if (msg.type === "roster") {
-    $("mics").textContent = msg.publishers.length;
-    const ul = $("miclist");
-    ul.innerHTML = "";
-    for (const p of msg.publishers) {
-      const li = document.createElement("li");
-      const side = p.channel !== "mono" ? ` (${p.channel})` : "";
-      const state = p.muted ? "muted" : "live";
-      li.innerHTML = `<span>${p.name}${side}</span><span class="pill ${p.muted ? "warn" : "ok"}">${state}</span>`;
-      ul.appendChild(li);
-    }
+function clip(x) { return x > 1 ? 1 : x < -1 ? -1 : x; }
+
+// Decode one relayed frame: [channelCode, slot] header + Int16 PCM, then mix it
+// into the ring at this phone's own write position (channel routing + multi-mic).
+function mixFrame(arrbuf) {
+  if (!ringL) return;
+  const head = new Uint8Array(arrbuf, 0, 2);
+  const channel = head[0]; // 0 mono, 1 left, 2 right
+  const slot = head[1];
+  const pcm = new Int16Array(arrbuf, 2);
+
+  let w = writers[slot];
+  const leadSamples = Math.floor(JITTER_LEAD * SAMPLE_RATE);
+  // (Re)prime if new, or if it fell behind the read head (underrun / late arrival).
+  if (!w || w.pos < readPos + (leadSamples >> 2)) {
+    w = writers[slot] = { pos: readPos + leadSamples, channel };
   }
+  w.channel = channel;
+  w.lastFrame = performance.now();
+
+  const toL = channel === 1 || channel === 0;
+  const toR = channel === 2 || channel === 0;
+  for (let i = 0; i < pcm.length; i++) {
+    const s = pcm[i] / 0x8000;
+    const idx = w.pos % ringLen;
+    if (toL) ringL[idx] += s;
+    if (toR) ringR[idx] += s;
+    w.pos++;
+  }
+  const buffered = Math.max(0, (w.pos - readPos) / SAMPLE_RATE);
+  $("lat") && updateLatency(buffered * 1000);
 }
 
-function playFrame(pcm) {
-  if (!ctx) return;
-  const f32 = new Float32Array(pcm.length);
-  for (let i = 0; i < pcm.length; i++) f32[i] = pcm[i] / 0x8000;
-  const buffer = ctx.createBuffer(1, f32.length, SAMPLE_RATE);
-  buffer.copyToChannel(f32, 0);
-  const src = ctx.createBufferSource();
-  src.buffer = buffer;
-  src.connect(ctx.destination);
+// Req G — latency rating words from the buffered lead time.
+function updateLatency(bufMs) {
+  let word, cls;
+  if (bufMs < 250) { word = "Excellent"; cls = "ok"; }
+  else if (bufMs < 500) { word = "Good"; cls = "warn"; }
+  else { word = "Too much delay"; cls = "bad"; }
+  setPill("lat", `${word} · ${Math.round(bufMs)} ms`, cls);
+}
 
-  const now = ctx.currentTime;
-  if (playHead < now + 0.02) playHead = now + JITTER_LEAD; // (re)prime the buffer
-  src.start(playHead);
-  playHead += buffer.duration;
-  $("buf").textContent = Math.round((playHead - now) * 1000) + " ms";
+function handleControl(msg) {
+  if (msg.type === "pong") return; // latency derived from the buffer instead
+  if (msg.type !== "roster") return;
+  $("mics").textContent = msg.publishers.length;
+  const ul = $("miclist");
+  ul.innerHTML = "";
+  activeLR = { left: false, right: false };
+  for (const p of msg.publishers) {
+    if (!p.muted && p.channel === "left") activeLR.left = true;
+    if (!p.muted && p.channel === "right") activeLR.right = true;
+    const li = document.createElement("li");
+    const tag = p.channel === "left" ? '<span class="tag L">L</span>'
+      : p.channel === "right" ? '<span class="tag R">R</span>'
+      : '<span class="tag">mono</span>';
+    const [stateText, stateCls] = micState(p);
+    li.innerHTML = `<span class="who">${tag}<span class="nm">${escapeHtml(p.name)}</span></span>` +
+      `<span class="pill ${stateCls}">${stateText}</span>`;
+    ul.appendChild(li);
+  }
+  updateStereo();
+}
+
+// Req F — per-phone live state words.
+function micState(p) {
+  if (p.muted) return ["muted", "muted"];
+  if (p.connection === "lost") return ["disconnected", "bad"];
+  if (p.connection === "weak") return ["weak connection", "warn"];
+  if (p.latency_ms != null && p.latency_ms > 600) return ["high delay", "warn"];
+  if (p.level != null && p.level > 0.02) return ["streaming", "ok"];
+  return ["connected", "ok"];
+}
+
+// Req G — stereo strength.
+function updateStereo() {
+  if (activeLR.left && activeLR.right) setPill("stereo", "Strong", "ok");
+  else if (activeLR.left || activeLR.right) setPill("stereo", "Medium (one side)", "warn");
+  else setPill("stereo", "Mono", "muted");
+}
+
+function pingLoop() {
+  if (!ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({ type: "ping", t: performance.now() }));
+  setTimeout(pingLoop, 2500);
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
 function stop() {
@@ -138,6 +235,9 @@ function stop() {
   $("go").classList.remove("on");
   $("mics").textContent = "0";
   $("miclist").innerHTML = "";
+  setPill("stereo", "—", "muted");
+  setPill("lat", "—", "warn");
+  try { mixer && mixer.disconnect(); } catch (_) {}
   try { ws && ws.close(); } catch (_) {}
   try { ctx && ctx.close(); } catch (_) {}
 }

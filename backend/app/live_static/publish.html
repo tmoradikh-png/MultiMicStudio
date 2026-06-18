@@ -23,7 +23,8 @@
   .row > div { flex: 1; }
   .status { margin-top: 18px; background: #1a212b; border: 1px solid #2a3441;
     border-radius: 10px; padding: 14px; font-size: 14px; }
-  .status .line { display: flex; justify-content: space-between; padding: 3px 0; }
+  .status .line { display: flex; justify-content: space-between; padding: 3px 0;
+    align-items: center; }
   .status .k { color: #8b96a2; }
   .meter { height: 10px; background: #0b0f14; border-radius: 6px; overflow: hidden;
     margin-top: 8px; }
@@ -32,6 +33,18 @@
   .ok { background: #064e3b; color: #6ee7b7; }
   .bad { background: #7f1d1d; color: #fca5a5; }
   .warn { background: #78350f; color: #fcd34d; }
+  .guide { margin-top: 14px; background: #102a1c; border: 1px solid #1f5135;
+    border-radius: 10px; padding: 12px 14px; font-size: 13px; color: #a7f3d0;
+    line-height: 1.5; }
+  .guide.right { background: #2a1410; border-color: #5a2b1c; color: #fcd9b8; }
+  .fb { margin-top: 12px; border-radius: 10px; padding: 12px 14px; font-size: 13px;
+    line-height: 1.5; display: none; }
+  .fb.show { display: block; }
+  .fb.high { background: #3a1212; border: 1px solid #7f1d1d; color: #fca5a5; }
+  .toggle { display: flex; align-items: center; gap: 8px; margin-top: 14px;
+    font-size: 13px; color: #9aa4af; }
+  .toggle input { width: auto; }
+  .note { font-size: 12px; color: #6b7480; margin-top: 14px; line-height: 1.5; }
 </style>
 </head>
 <body>
@@ -50,40 +63,92 @@
         <label for="channel">Stereo side</label>
         <select id="channel">
           <option value="mono">Mono (center)</option>
-          <option value="left">Left (Phone A)</option>
-          <option value="right">Right (Phone B)</option>
+          <option value="left">Left — Phone A</option>
+          <option value="right">Right — Phone B</option>
         </select>
       </div>
     </div>
 
+    <div id="guide" class="guide" hidden></div>
+
     <button id="go">Go live</button>
     <button id="mute" hidden>Mute</button>
+
+    <label class="toggle">
+      <input id="autoreduce" type="checkbox" checked />
+      Auto-lower the mic if feedback (squealing) is detected
+    </label>
+
+    <div id="fb" class="fb high">
+      <strong>⚠️ Feedback risk: High.</strong>
+      Move this phone away from the speaker, point the mic away from it, or use
+      headphones for the listener. <span id="fbauto"></span>
+    </div>
 
     <div class="status">
       <div class="line"><span class="k">Status</span><span id="st" class="pill bad">offline</span></div>
       <div class="line"><span class="k">Listeners</span><span id="listeners">0</span></div>
-      <div class="line"><span class="k">Latency</span><span id="lat">—</span></div>
+      <div class="line"><span class="k">Latency</span><span id="lat" class="pill warn">—</span></div>
+      <div class="line"><span class="k">Connection</span><span id="conn" class="pill warn">—</span></div>
+      <div class="line"><span class="k">Feedback risk</span><span id="fbpill" class="pill ok">Low</span></div>
       <div class="line"><span class="k">Mic level</span><span id="lvl">0%</span></div>
       <div class="meter"><div id="bar"></div></div>
+    </div>
+
+    <div class="note">
+      Keep this screen open and the phone unlocked while live. For a Bluetooth
+      speaker, pair it on the <em>listener</em> device, not here.
     </div>
   </div>
 
 <script>
 const SAMPLE_RATE = 48000;
 const $ = (id) => document.getElementById(id);
-let ws, ctx, source, processor, stream, live = false, muted = false;
-let lastPing = 0;
+let ws, ctx, source, gainNode, processor, analyser, stream;
+let live = false, muted = false;
+let micGain = 1.0;            // current applied mic gain (feedback auto-reduce)
+let fbStreak = 0, okStreak = 0;
+let freqBuf = null;
 
 // Restore last room/name for convenience.
 $("room").value = localStorage.getItem("mm_live_room") || "";
 $("name").value = localStorage.getItem("mm_live_name") || "";
+$("channel").value = localStorage.getItem("mm_live_channel") || "mono";
 
 function setStatus(text, cls) { const s = $("st"); s.textContent = text; s.className = "pill " + cls; }
+function setPill(id, text, cls) { const e = $(id); e.textContent = text; e.className = "pill " + cls; }
+
+// Req E — guide the user where to place the phone for stereo.
+function updateGuide() {
+  const ch = $("channel").value;
+  const g = $("guide");
+  if (ch === "mono") { g.hidden = true; return; }
+  g.hidden = false;
+  g.className = "guide" + (ch === "right" ? " right" : "");
+  if (ch === "left") {
+    g.innerHTML = "🅰️ <strong>LEFT microphone.</strong> Place this phone on the " +
+      "<strong>left</strong> side of the speakers/stage, about 0.5–1 m left of centre.";
+  } else {
+    g.innerHTML = "🅱️ <strong>RIGHT microphone.</strong> Place this phone on the " +
+      "<strong>right</strong> side, about 0.5–1 m right of centre. Pair it with a " +
+      "LEFT phone using the same room code for true stereo.";
+  }
+}
+$("channel").onchange = updateGuide;
+updateGuide();
 
 function wsUrl(room, name, channel) {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const q = new URLSearchParams({ role: "publisher", name, channel });
   return `${proto}://${location.host}/live/ws/${encodeURIComponent(room)}?${q}`;
+}
+
+// Req G — latency rating words.
+function latencyLabel(rtt) {
+  const oneWay = rtt / 2;
+  if (oneWay < 120) return ["Excellent", "ok"];
+  if (oneWay < 300) return ["Good", "warn"];
+  return ["Too much delay", "bad"];
 }
 
 async function goLive() {
@@ -94,6 +159,7 @@ async function goLive() {
   const channel = $("channel").value;
   localStorage.setItem("mm_live_room", room);
   localStorage.setItem("mm_live_name", name);
+  localStorage.setItem("mm_live_channel", channel);
 
   try {
     stream = await navigator.mediaDevices.getUserMedia({
@@ -108,11 +174,20 @@ async function goLive() {
   ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
   await ctx.resume();
   source = ctx.createMediaStreamSource(stream);
+
+  // Mic -> gain (for feedback auto-reduce) -> processor -> destination.
+  gainNode = ctx.createGain();
+  micGain = 1.0;
+  gainNode.gain.value = micGain;
+  analyser = ctx.createAnalyser();
+  analyser.fftSize = 2048;
+  analyser.smoothingTimeConstant = 0.5;
+  freqBuf = new Uint8Array(analyser.frequencyBinCount);
   processor = ctx.createScriptProcessor(2048, 1, 1);
 
   ws = new WebSocket(wsUrl(room, name, channel));
   ws.binaryType = "arraybuffer";
-  ws.onopen = () => { setStatus("LIVE", "ok"); pingLoop(); };
+  ws.onopen = () => { setStatus("LIVE", "ok"); pingLoop(); feedbackLoop(); };
   ws.onclose = () => { setStatus("offline", "bad"); stop(); };
   ws.onerror = () => setStatus("error", "bad");
   ws.onmessage = (ev) => {
@@ -121,8 +196,11 @@ async function goLive() {
     if (msg.type === "roster") $("listeners").textContent = msg.listeners.length;
     if (msg.type === "pong" && msg.t) {
       const rtt = Math.round(performance.now() - msg.t);
-      $("lat").textContent = rtt + " ms" + (rtt > 400 ? " (high)" : "");
-      sendStatus({ latency_ms: rtt, connection: rtt > 600 ? "weak" : "stable" });
+      const [word, cls] = latencyLabel(rtt);
+      setPill("lat", `${word} · ${rtt} ms`, cls);
+      const conn = rtt > 700 ? "weak" : "stable";
+      setPill("conn", conn === "weak" ? "Weak" : "Stable", conn === "weak" ? "warn" : "ok");
+      sendStatus({ latency_ms: rtt, connection: conn });
     }
   };
 
@@ -135,6 +213,7 @@ async function goLive() {
     const pct = Math.min(100, Math.round(rms * 300));
     $("bar").style.width = pct + "%";
     $("lvl").textContent = pct + "%";
+    sendStatus({ level: Math.min(1, rms * 3) }, true);
 
     if (!ws || ws.readyState !== 1 || muted) return;
     const pcm = new Int16Array(input.length);
@@ -145,7 +224,9 @@ async function goLive() {
     ws.send(pcm.buffer);
   };
 
-  source.connect(processor);
+  source.connect(gainNode);
+  gainNode.connect(analyser);
+  gainNode.connect(processor);
   processor.connect(ctx.destination); // keep the graph alive (output is silent mic)
   live = true;
   $("go").textContent = "Stop";
@@ -153,8 +234,55 @@ async function goLive() {
   $("mute").hidden = false;
 }
 
-function sendStatus(obj) {
-  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "status", ...obj }));
+// Req H — feedback / echo protection. Acoustic feedback shows up as a strong,
+// sustained narrow-band tone: one FFT bin dominates the spectrum for a while.
+// We watch the peak-to-average ratio; if it stays high and loud we warn and
+// (optionally) duck the mic gain until it clears.
+function feedbackLoop() {
+  if (!live || !analyser) return;
+  analyser.getByteFrequencyData(freqBuf);
+  let peak = 0, total = 0;
+  for (let i = 2; i < freqBuf.length; i++) {
+    total += freqBuf[i];
+    if (freqBuf[i] > peak) peak = freqBuf[i];
+  }
+  const avg = total / (freqBuf.length - 2);
+  const ratio = avg > 0 ? peak / avg : 0;
+  // Loud (peak well above noise) + very tonal (peak dwarfs the average).
+  const risky = peak > 150 && ratio > 14;
+  if (risky) { fbStreak++; okStreak = 0; } else { okStreak++; if (okStreak > 6) fbStreak = 0; }
+
+  const high = fbStreak >= 4; // ~0.8s sustained
+  if (high) {
+    setPill("fbpill", "High", "bad");
+    $("fb").classList.add("show");
+    if ($("autoreduce").checked && micGain > 0.25) {
+      micGain = Math.max(0.25, micGain - 0.12);
+      if (gainNode) gainNode.gain.setTargetAtTime(micGain, ctx.currentTime, 0.05);
+      $("fbauto").textContent = `Mic auto-lowered to ${Math.round(micGain * 100)}%.`;
+    }
+  } else {
+    setPill("fbpill", "Low", "ok");
+    $("fb").classList.remove("show");
+    // Slowly restore gain once it's been clear for a while.
+    if (micGain < 1.0 && okStreak > 12) {
+      micGain = Math.min(1.0, micGain + 0.05);
+      if (gainNode) gainNode.gain.setTargetAtTime(micGain, ctx.currentTime, 0.2);
+      if (micGain >= 0.999) $("fbauto").textContent = "";
+    }
+  }
+  setTimeout(feedbackLoop, 200);
+}
+
+let lastLevelSent = 0;
+function sendStatus(obj, throttle) {
+  if (!ws || ws.readyState !== 1) return;
+  if (throttle) {
+    const now = performance.now();
+    if (now - lastLevelSent < 1000) return; // level updates at most ~1/s
+    lastLevelSent = now;
+  }
+  ws.send(JSON.stringify({ type: "status", ...obj }));
 }
 function pingLoop() {
   if (!ws || ws.readyState !== 1) return;
@@ -168,7 +296,11 @@ function stop() {
   $("go").classList.remove("live");
   $("mute").hidden = true;
   $("bar").style.width = "0%";
+  setPill("fbpill", "Low", "ok");
+  $("fb").classList.remove("show");
   try { processor && processor.disconnect(); } catch (_) {}
+  try { analyser && analyser.disconnect(); } catch (_) {}
+  try { gainNode && gainNode.disconnect(); } catch (_) {}
   try { source && source.disconnect(); } catch (_) {}
   try { stream && stream.getTracks().forEach((t) => t.stop()); } catch (_) {}
   try { ctx && ctx.close(); } catch (_) {}

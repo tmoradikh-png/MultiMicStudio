@@ -79,13 +79,28 @@ exactly what broke.
    output to the Bluetooth speaker. (Bluetooth is output‑only here; the phone mic
    still streams over Wi‑Fi/4G.)
 
-### Rung 6 — Live stereo (two phones) — *preview*
-1. Listener on PC, room `STEREO1`.
-2. Phone A → `/live/publish`, **Stereo side = Left**.
-3. Phone B → `/live/publish`, **Stereo side = Right**.
-4. Both stream into the same room; the roster shows `(left)` / `(right)`.
-   *Note:* L0 plays publishers summed; true L/R speaker routing + live sync is the
-   next phase (L‑stereo) — the channel tags are already plumbed for it.
+### Rung 6 — Live stereo (two phones)
+1. Listener on PC, room `STEREO1`, **Start listening**.
+2. Phone A → `/live/publish`, **Stereo side = Left** (follow the on‑screen
+   placement guide — put it on the left).
+3. Phone B → `/live/publish`, **Stereo side = Right** (place it on the right).
+4. Both stream into the same room. The listener routes the **left** phone to the
+   left speaker and the **right** phone to the right speaker, mixing them on a
+   shared timeline. The roster shows an `L` / `R` tag per phone and the **Stereo**
+   status reads **Strong** when both sides are live.
+
+### Rung 7 — Several phones (party / room mode)
+1. Listener on PC, room `PARTY9`.
+2. Three or more phones → `/live/publish` (any mix of Left/Right/Mono), same room.
+3. All phones mix together live. The listener roster shows each phone's state:
+   `connected` / `streaming` / `muted` / `weak connection` / `high delay` /
+   `disconnected`.
+
+### Feedback / echo check (req H)
+With a listener playing out loud near a publishing phone, raise the speaker volume
+until it starts to ring. The publisher's **Feedback risk** flips to **High**, a
+warning banner appears, and (if *Auto‑lower* is ticked) the mic gain ducks until it
+clears. Move the phone away or use headphones to confirm it returns to **Low**.
 
 ---
 
@@ -95,10 +110,13 @@ exactly what broke.
 |-------|-------|---------|
 | Status | both | `LIVE` / `listening` = connected; `offline` = socket closed |
 | Listeners | publisher | how many outputs are receiving |
-| Microphones | listener | how many phones are streaming (with name + side) |
-| Latency | publisher | round‑trip ms to the server (`high` warning > 400 ms) |
-| Buffer | listener | playback lead in ms (the jitter buffer; ~180 ms target) |
+| Microphones | listener | how many phones are streaming (with name + L/R tag) |
+| Latency | both | rating word — **Excellent** / **Good** / **Too much delay** (+ ms) |
+| Connection | publisher | **Stable** / **Weak** (from round‑trip time) |
+| Feedback risk | publisher | **Low** / **High** — High warns + can auto‑lower the mic |
+| Stereo | listener | **Strong** (both L+R live) / **Medium** (one side) / **Mono** |
 | Mic level | publisher | live input meter (confirms the mic is actually capturing) |
+| Per‑phone state | listener | `connected` / `streaming` / `muted` / `weak connection` / `high delay` / `disconnected` |
 
 ---
 
