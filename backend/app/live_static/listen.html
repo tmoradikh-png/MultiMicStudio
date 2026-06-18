@@ -81,6 +81,11 @@ let activeLR = { left: false, right: false };
 $("room").value = localStorage.getItem("mm_live_room") || "";
 $("name").value = localStorage.getItem("mm_listen_name") || "Speaker";
 
+// Prefill from URL params when launched from the mobile app (?room=&name=).
+const _qp = new URLSearchParams(location.search);
+if (_qp.get("room")) $("room").value = _qp.get("room").toUpperCase();
+if (_qp.get("name")) $("name").value = _qp.get("name");
+
 function setStatus(t, cls) { const s = $("st"); s.textContent = t; s.className = "pill " + cls; }
 function setPill(id, text, cls) { const e = $(id); e.textContent = text; e.className = "pill " + cls; }
 

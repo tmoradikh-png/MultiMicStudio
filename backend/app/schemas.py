@@ -180,3 +180,20 @@ class ProjectOutputs(BaseModel):
     processing_status: ProcessingStatus
     outputs: list[OutputItem]
     quality: QualityBadge | None = None
+
+
+class QualityReport(BaseModel):
+    """Plain-language quality report shown to the user inside the app."""
+    available: bool = True
+    sync: str            # Excellent | Good | Problem
+    stereo_width: str    # Strong | Medium | Weak
+    noise: str           # Low | Medium | High
+    clipping: str        # No | Yes
+    duplicate: str       # No | Yes
+    score: int           # 0..100
+
+
+class ProjectQualityReport(BaseModel):
+    session_id: str
+    processing_status: ProcessingStatus
+    report: QualityReport | None = None

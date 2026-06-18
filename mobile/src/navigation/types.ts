@@ -10,6 +10,10 @@ export type RootStackParamList = {
   Home: undefined;
   CreateSession: undefined;
   JoinSession: undefined;
+  // Live speaker mode lets a phone be a microphone or a stereo listener over the
+  // network. Rendered with a WebView onto the backend /live pages (the working
+  // real-time mic engine), so no account or recording session is required.
+  Live: undefined;
   // Recording screen needs the session + this device's participant identity.
   Record: {
     session: SessionData;

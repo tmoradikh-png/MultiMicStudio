@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.audio import effects, processing, quality
 from app.database import get_db
-from app.deps import get_current_user
+from app.deps import Principal, get_current_user, get_principal
 from app.models import (
     ProcessedProject,
     ProcessingStatus,
@@ -22,7 +22,9 @@ from app.schemas import (
     ProjectListItem,
     ProjectOut,
     ProjectOutputs,
+    ProjectQualityReport,
     QualityBadge,
+    QualityReport,
 )
 from app.storage import get_storage, key_to_relpath
 from app.worker.tasks import _select_input_recordings, dispatch_processing
@@ -255,6 +257,7 @@ def get_project_outputs(
     if stereo_url:
         for mode, label in (
             ("studio_voice", "Studio Voice"),
+            ("podcast", "Podcast / Clean Voice"),
             ("karaoke", "Singing / Karaoke"),
             ("party", "Party / Room"),
         ):
@@ -276,6 +279,7 @@ def get_project_outputs(
     else:
         for mode, label in (
             ("studio_voice", "Studio Voice"),
+            ("podcast", "Podcast / Clean Voice"),
             ("karaoke", "Singing / Karaoke"),
             ("party", "Party / Room"),
         ):
@@ -317,5 +321,59 @@ def get_project_outputs(
         processing_status=project.processing_status,
         outputs=outputs,
         quality=badge,
+    )
+
+
+@router.get("/{session_id}/quality_report", response_model=ProjectQualityReport)
+def get_quality_report(
+    session_id: str,
+    db: Session = Depends(get_db),
+    principal: Principal = Depends(get_principal),
+) -> ProjectQualityReport:
+    """Plain-language quality report for the in-app result screen.
+
+    Visible to the host (account owner) and to any guest participant of the
+    session, so a normal user sees Sync / Stereo / Noise / Clipping / Duplicate /
+    Score right in the app. Read-only; reuses the QA bench measurements.
+    """
+    session = db.get(RecordingSession, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    is_owner = principal.user is not None and session.owner_user_id == principal.user.id
+    is_member = (
+        principal.participant is not None
+        and principal.participant.session_id == session_id
+    )
+    if not (is_owner or is_member):
+        raise HTTPException(status_code=403, detail="Not part of this session")
+
+    project = session.project
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not processed yet")
+
+    rep = None
+    if project.processing_status == ProcessingStatus.done:
+        try:
+            storage = get_storage()
+            recs = _select_input_recordings(db, session_id)
+            raw_paths = [
+                storage.path(key_to_relpath(r.file_url)) for r in recs if r.file_url
+            ]
+            natural_path = (
+                storage.path(key_to_relpath(project.final_audio_stereo_url))
+                if project.final_audio_stereo_url
+                else None
+            )
+            result = quality.report(natural_path, raw_paths)
+            if result is not None:
+                rep = QualityReport(**result)
+        except Exception:  # noqa: BLE001 — advisory; never fail the response
+            rep = None
+
+    return ProjectQualityReport(
+        session_id=session_id,
+        processing_status=project.processing_status,
+        report=rep,
     )
 

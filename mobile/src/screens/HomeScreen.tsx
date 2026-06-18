@@ -43,6 +43,14 @@ export default function HomeScreen({ navigation }: Props) {
         </Text>
       </Pressable>
 
+      <Pressable style={styles.card} onPress={() => navigation.navigate("Live")}>
+        <Text style={[styles.title, { fontSize: 20 }]}>🔊 Live speaker</Text>
+        <Text style={styles.subtitle}>
+          Turn this phone into a wireless microphone or a stereo listener — sound
+          plays live on the listening phone, no recording needed.
+        </Text>
+      </Pressable>
+
       <Pressable style={styles.buttonGhost} onPress={signOut}>
         <Text style={styles.buttonGhostText}>Sign out</Text>
       </Pressable>

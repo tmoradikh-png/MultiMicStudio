@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
+import { Audio } from "expo-av";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import {
   api,
@@ -7,7 +8,9 @@ import {
   describeError,
   getToken,
   setActiveSession,
+  type OutputItem,
   type Participant,
+  type QualityReport,
 } from "../api/client";
 import {
   Recorder,
@@ -50,6 +53,16 @@ export default function RecordScreen({ route, navigation }: Props) {
   );
   // Host-only: live list of phones that have joined this session.
   const [members, setMembers] = useState<Participant[]>(session.participants ?? []);
+  // Host-only result state: after "Mix & transcribe" the app polls the backend and
+  // shows the plain-language quality report and the playable preset mixes in-app
+  // (no web dashboard needed).
+  const [resultPhase, setResultPhase] =
+    useState<"idle" | "processing" | "ready" | "failed">("idle");
+  const [report, setReport] = useState<QualityReport | null>(null);
+  const [outputs, setOutputs] = useState<OutputItem[]>([]);
+  const [playingRole, setPlayingRole] = useState<string | null>(null);
+  const soundRef = useRef<Audio.Sound | null>(null);
+  const resultPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isHost = role === "host";
 
@@ -58,6 +71,14 @@ export default function RecordScreen({ route, navigation }: Props) {
   useEffect(() => {
     phaseRef.current = phase;
   }, [phase]);
+
+  // Stop result polling + unload any playing preview when leaving the screen.
+  useEffect(() => {
+    return () => {
+      if (resultPollRef.current) clearInterval(resultPollRef.current);
+      soundRef.current?.unloadAsync().catch(() => undefined);
+    };
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -257,12 +278,95 @@ export default function RecordScreen({ route, navigation }: Props) {
 
   async function onProcess() {
     try {
-      setMessage(
-        "Processing started. Open the web dashboard to see the mix, presets and quality badge.",
-      );
+      setResultPhase("processing");
+      setReport(null);
+      setOutputs([]);
+      setMessage("Mixing and analyzing your take… this can take a moment.");
       await api.processSession(session.id);
+      startResultPolling();
+    } catch (e) {
+      setResultPhase("failed");
+      setMessage(describeError(e));
+    }
+  }
+
+  // Poll the backend until processing finishes, then load the quality report and
+  // the playable preset mixes so the host sees everything inside the app.
+  function startResultPolling() {
+    if (resultPollRef.current) clearInterval(resultPollRef.current);
+    let tries = 0;
+    resultPollRef.current = setInterval(async () => {
+      tries += 1;
+      try {
+        const qr = await api.getQualityReport(session.id);
+        if (qr.processing_status === "done") {
+          if (resultPollRef.current) clearInterval(resultPollRef.current);
+          resultPollRef.current = null;
+          try {
+            const out = await api.getOutputs(session.id);
+            setOutputs(out.outputs.filter((o) => o.available && o.url));
+          } catch {
+            // outputs are best-effort; report still shows
+          }
+          setReport(qr.report);
+          setResultPhase("ready");
+          setMessage(null);
+        } else if (qr.processing_status === "failed") {
+          if (resultPollRef.current) clearInterval(resultPollRef.current);
+          resultPollRef.current = null;
+          setResultPhase("failed");
+          setMessage("Processing failed on the server. Please try again.");
+        }
+      } catch {
+        // transient; keep polling
+      }
+      if (tries > 60 && resultPollRef.current) {
+        clearInterval(resultPollRef.current);
+        resultPollRef.current = null;
+        setResultPhase("failed");
+        setMessage("Still processing — check back in a moment.");
+      }
+    }, 4000);
+  }
+
+  // Play (or stop) one of the result mixes through the phone speaker.
+  async function onPlayOutput(item: OutputItem) {
+    try {
+      if (!item.url) return;
+      // Tapping the currently-playing item stops it.
+      if (playingRole === item.role) {
+        await stopPlayback();
+        return;
+      }
+      await stopPlayback();
+      await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
+      const { sound } = await Audio.Sound.createAsync(
+        { uri: item.url },
+        { shouldPlay: true },
+      );
+      soundRef.current = sound;
+      setPlayingRole(item.role);
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (status.isLoaded && status.didJustFinish) {
+          stopPlayback().catch(() => undefined);
+        }
+      });
     } catch (e) {
       setMessage(describeError(e));
+    }
+  }
+
+  async function stopPlayback() {
+    const s = soundRef.current;
+    soundRef.current = null;
+    setPlayingRole(null);
+    if (s) {
+      try {
+        await s.stopAsync();
+      } catch {
+        // ignore
+      }
+      await s.unloadAsync().catch(() => undefined);
     }
   }
 
@@ -447,9 +551,28 @@ export default function RecordScreen({ route, navigation }: Props) {
       ) : null}
 
       {phase === "uploaded" && isHost ? (
-        <Pressable style={styles.button} onPress={onProcess}>
-          <Text style={styles.buttonText}>Mix & transcribe (host)</Text>
+        <Pressable
+          style={[styles.button, resultPhase === "processing" && { opacity: 0.5 }]}
+          onPress={onProcess}
+          disabled={resultPhase === "processing"}
+        >
+          <Text style={styles.buttonText}>
+            {resultPhase === "processing"
+              ? "Mixing…"
+              : resultPhase === "ready"
+                ? "Re-run mix & transcribe"
+                : "Mix & transcribe (host)"}
+          </Text>
         </Pressable>
+      ) : null}
+
+      {isHost && resultPhase === "ready" ? (
+        <ResultPanel
+          report={report}
+          outputs={outputs}
+          playingRole={playingRole}
+          onPlay={onPlayOutput}
+        />
       ) : null}
 
       {phase === "uploaded" ? (
@@ -461,5 +584,124 @@ export default function RecordScreen({ route, navigation }: Props) {
         </Pressable>
       ) : null}
     </ScrollView>
+  );
+}
+
+// Reads a quality field's value into a colour (good / ok / poor) for the report.
+function tone(field: string, value: string): string {
+  const good = new Set(["Excellent", "Strong", "Low", "No"]);
+  const ok = new Set(["Good", "Medium"]);
+  if (good.has(value)) return colors.success;
+  if (ok.has(value)) return colors.primary;
+  return colors.danger;
+}
+
+// Host result panel: plain-language quality report + tap-to-play preset mixes,
+// all inside the app (the same data the web dashboard shows).
+function ResultPanel({
+  report,
+  outputs,
+  playingRole,
+  onPlay,
+}: {
+  report: QualityReport | null;
+  outputs: OutputItem[];
+  playingRole: string | null;
+  onPlay: (item: OutputItem) => void;
+}) {
+  const rows: { label: string; value: string }[] = report
+    ? [
+        { label: "Timing / sync", value: report.sync },
+        { label: "Stereo width", value: report.stereo_width },
+        { label: "Background noise", value: report.noise },
+        { label: "Clipping", value: report.clipping },
+        { label: "Duplicate sound", value: report.duplicate },
+      ]
+    : [];
+
+  return (
+    <View style={{ marginTop: 8 }}>
+      <Text style={[styles.title, { fontSize: 20, marginTop: 8 }]}>Your mix is ready</Text>
+
+      {report ? (
+        <View style={styles.card}>
+          <View
+            style={{
+              flexDirection: "row",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: 10,
+            }}
+          >
+            <Text style={{ color: colors.muted, fontSize: 14 }}>Quality score</Text>
+            <Text
+              style={{
+                color:
+                  report.score >= 75
+                    ? colors.success
+                    : report.score >= 50
+                      ? colors.primary
+                      : colors.danger,
+                fontSize: 28,
+                fontWeight: "800",
+              }}
+            >
+              {report.score}
+              <Text style={{ color: colors.muted, fontSize: 14 }}>/100</Text>
+            </Text>
+          </View>
+          {rows.map((r) => (
+            <View
+              key={r.label}
+              style={{
+                flexDirection: "row",
+                justifyContent: "space-between",
+                paddingVertical: 4,
+              }}
+            >
+              <Text style={{ color: colors.muted, fontSize: 14 }}>{r.label}</Text>
+              <Text style={{ color: tone(r.label, r.value), fontWeight: "700" }}>
+                {r.value}
+              </Text>
+            </View>
+          ))}
+        </View>
+      ) : (
+        <View style={styles.card}>
+          <Text style={{ color: colors.muted }}>
+            The mix is ready. (Quality report not available for this take.)
+          </Text>
+        </View>
+      )}
+
+      {outputs.length > 0 ? (
+        <>
+          <Text style={styles.label}>Listen (tap to play / stop)</Text>
+          {outputs.map((o) => (
+            <Pressable
+              key={o.role}
+              style={[
+                styles.card,
+                {
+                  flexDirection: "row",
+                  alignItems: "center",
+                  marginBottom: 10,
+                  borderColor:
+                    playingRole === o.role ? colors.primary : colors.border,
+                },
+              ]}
+              onPress={() => onPlay(o)}
+            >
+              <Text style={{ fontSize: 22, marginRight: 12 }}>
+                {playingRole === o.role ? "⏸" : "▶"}
+              </Text>
+              <Text style={{ color: colors.text, fontSize: 16, fontWeight: "600" }}>
+                {o.label}
+              </Text>
+            </Pressable>
+          ))}
+        </>
+      ) : null}
+    </View>
   );
 }

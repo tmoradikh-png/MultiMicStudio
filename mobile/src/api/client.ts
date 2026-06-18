@@ -215,6 +215,56 @@ export interface SessionStatus {
   ended_at: string | null;
 }
 
+// One downloadable/playable result (raw phone take, natural stereo, or a preset).
+export interface OutputItem {
+  role: string;
+  label: string;
+  url: string | null;
+  kind: string;
+  available: boolean;
+}
+
+export interface QualityBadgeSummaryItem {
+  question: string;
+  answer: string;
+  detail: string;
+  good: boolean;
+}
+
+export interface QualityBadge {
+  ok: boolean;
+  passed: number;
+  total: number;
+  failed: number;
+  baseline_failed: number;
+  baseline_total: number;
+  summary: QualityBadgeSummaryItem[];
+}
+
+export interface ProjectOutputs {
+  session_id: string;
+  processing_status: string;
+  outputs: OutputItem[];
+  quality: QualityBadge | null;
+}
+
+// Plain-language quality report shown on the in-app result screen.
+export interface QualityReport {
+  available: boolean;
+  sync: string; // Excellent | Good | Problem
+  stereo_width: string; // Strong | Medium | Weak
+  noise: string; // Low | Medium | High
+  clipping: string; // No | Yes
+  duplicate: string; // No | Yes
+  score: number; // 0..100
+}
+
+export interface ProjectQualityReport {
+  session_id: string;
+  processing_status: string;
+  report: QualityReport | null;
+}
+
 export const api = {
   async signup(email: string, name: string, password: string): Promise<AuthToken> {
     const res = await safeFetch(`${API_BASE_URL}/auth/signup`, {
@@ -314,6 +364,25 @@ export const api = {
       headers: await authHeaders(),
     });
     return handle<unknown>(res);
+  },
+
+  // The finished, playable results for a session (raw takes, natural stereo, and
+  // the enhanced presets). Usable by the host or any guest participant.
+  async getOutputs(sessionId: string): Promise<ProjectOutputs> {
+    const res = await safeFetch(`${API_BASE_URL}/projects/${sessionId}/outputs`, {
+      headers: await authHeaders(),
+    });
+    return handle<ProjectOutputs>(res);
+  },
+
+  // Plain-language quality report (Sync / Stereo / Noise / Clipping / Duplicate /
+  // Score) for the in-app result screen. Host or guest.
+  async getQualityReport(sessionId: string): Promise<ProjectQualityReport> {
+    const res = await safeFetch(
+      `${API_BASE_URL}/projects/${sessionId}/quality_report`,
+      { headers: await authHeaders() },
+    );
+    return handle<ProjectQualityReport>(res);
   },
 };
 

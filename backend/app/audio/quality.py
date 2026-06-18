@@ -107,3 +107,88 @@ def evaluate(
     except Exception:  # noqa: BLE001  (badge is best-effort; never break the page)
         logger.exception("Quality evaluation failed")
         return None
+
+
+def report(
+    natural_path: str | None,
+    raw_paths: list[str],
+) -> dict | None:
+    """Plain-language quality report for the in-app result screen.
+
+    Maps the same bench measurements to simple words a normal user understands,
+    plus a 0-100 score. Read-only; never alters audio. Returns ``None`` if there is
+    nothing to measure. Shape:
+
+        {
+          "available": True,
+          "sync": "Excellent|Good|Problem",
+          "stereo_width": "Strong|Medium|Weak",
+          "noise": "Low|Medium|High",
+          "clipping": "No|Yes",
+          "duplicate": "No|Yes",
+          "score": 0..100,
+        }
+    """
+    try:
+        bench = _load_bench()
+        if not natural_path:
+            return None
+        nat = bench.analyze(bench.load_clip_as("natural", natural_path))
+
+        # Sync — residual offset AFTER alignment between the two raw phones.
+        raw_offset_ms = None
+        if len(raw_paths) >= 2:
+            a = bench.load_clip_as("single_phone", raw_paths[0])
+            b = bench.load_clip_as("raw_phone_2", raw_paths[1])
+            raw_offset_ms = bench.residual_offset_ms(a.mono, b.mono, a.sr)
+        if raw_offset_ms is None:
+            sync, sync_pts = ("Good", 18)  # single phone: nothing to be out of sync
+        elif raw_offset_ms <= 25:
+            sync, sync_pts = ("Excellent", 25)
+        elif raw_offset_ms <= 60:
+            sync, sync_pts = ("Good", 18)
+        else:
+            sync, sync_pts = ("Problem", 6)
+
+        # Stereo width — pan movement range of the natural mix.
+        pan = float(nat.stereo.get("pan_range", 0.0))
+        if pan >= 1.4:
+            width, width_pts = ("Strong", 25)
+        elif pan >= 0.8:
+            width, width_pts = ("Medium", 17)
+        else:
+            width, width_pts = ("Weak", 8)
+
+        # Noise — signal-to-noise ratio of the natural mix.
+        snr = float(nat.snr_db)
+        if snr >= 35:
+            noise, noise_pts = ("Low", 25)
+        elif snr >= 22:
+            noise, noise_pts = ("Medium", 16)
+        else:
+            noise, noise_pts = ("High", 7)
+
+        # Clipping — any samples hitting full scale.
+        clipping = "Yes" if nat.clip_count > 0 else "No"
+        clip_pts = 0 if nat.clip_count > 0 else 15
+
+        # Duplicate / stacked audio — autocorrelation prominence.
+        dup_bad = float(nat.dup_prominence) >= 0.45
+        duplicate = "Yes" if dup_bad else "No"
+        dup_pts = 0 if dup_bad else 10
+
+        score = int(
+            max(0, min(100, sync_pts + width_pts + noise_pts + clip_pts + dup_pts))
+        )
+        return {
+            "available": True,
+            "sync": sync,
+            "stereo_width": width,
+            "noise": noise,
+            "clipping": clipping,
+            "duplicate": duplicate,
+            "score": score,
+        }
+    except Exception:  # noqa: BLE001 — advisory; never break the response
+        logger.exception("Quality report failed")
+        return None

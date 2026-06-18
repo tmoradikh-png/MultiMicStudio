@@ -115,6 +115,13 @@ $("room").value = localStorage.getItem("mm_live_room") || "";
 $("name").value = localStorage.getItem("mm_live_name") || "";
 $("channel").value = localStorage.getItem("mm_live_channel") || "mono";
 
+// Prefill from URL params when launched from the mobile app (?room=&name=&channel=).
+const _qp = new URLSearchParams(location.search);
+if (_qp.get("room")) $("room").value = _qp.get("room").toUpperCase();
+if (_qp.get("name")) $("name").value = _qp.get("name");
+if (_qp.get("channel") && ["mono", "left", "right"].includes(_qp.get("channel")))
+  $("channel").value = _qp.get("channel");
+
 function setStatus(text, cls) { const s = $("st"); s.textContent = text; s.className = "pill " + cls; }
 function setPill(id, text, cls) { const e = $(id); e.textContent = text; e.className = "pill " + cls; }
 

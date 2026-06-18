@@ -13,6 +13,7 @@ import HomeScreen from "./src/screens/HomeScreen";
 import CreateSessionScreen from "./src/screens/CreateSessionScreen";
 import JoinSessionScreen from "./src/screens/JoinSessionScreen";
 import RecordScreen from "./src/screens/RecordScreen";
+import LiveScreen from "./src/screens/LiveScreen";
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -70,6 +71,11 @@ function Routes() {
             component={RecordScreen}
             options={{ title: "Recording", headerBackVisible: false }}
           />
+          <Stack.Screen
+            name="Live"
+            component={LiveScreen}
+            options={{ title: "Live speaker" }}
+          />
         </>
       ) : (
         <>
@@ -94,6 +100,11 @@ function Routes() {
             name="Record"
             component={RecordScreen}
             options={{ title: "Recording", headerBackVisible: false }}
+          />
+          <Stack.Screen
+            name="Live"
+            component={LiveScreen}
+            options={{ title: "Live speaker" }}
           />
         </>
       )}

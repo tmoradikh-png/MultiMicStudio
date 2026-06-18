@@ -15,7 +15,7 @@ import numpy as np
 from scipy import signal
 
 # Public list of selectable modes (kept in sync with the API/UI).
-ENHANCEMENT_MODES = ("natural", "studio_voice", "karaoke", "party")
+ENHANCEMENT_MODES = ("natural", "studio_voice", "podcast", "karaoke", "party")
 DEFAULT_MODE = "natural"
 
 
@@ -264,6 +264,19 @@ def apply_enhancement(stereo: np.ndarray, sr: int, mode: str) -> np.ndarray:
         x = _compressor(x, sr, threshold_db=-20.0, ratio=2.5, makeup_db=1.5)
         # Final light expander keeps the floor down after make-up gain.
         x = _denoise_gate(x, sr, over_floor_db=8.0, ratio=2.0, min_gain_db=-10.0)
+        return _normalize(x, target_peak=0.85)  # ~-1.4 dBFS headroom
+
+    if mode == "podcast":
+        # Clean spoken-voice preset: stronger, broadband noise suppression and a
+        # tighter band than studio_voice, for talking/podcast clarity. No reverb or
+        # echo (those would muddy speech). Length-preserving like every preset.
+        x = _highpass(x, sr, 100.0)
+        x = _denoise_gate(x, sr, over_floor_db=12.0, ratio=3.0, min_gain_db=-18.0)
+        x = _biquad_peak(x, sr, 300.0, 1.0, -2.0)    # cut mud/boom
+        x = _biquad_peak(x, sr, 2500.0, 0.9, 2.0)    # intelligibility
+        x = _biquad_peak(x, sr, 6500.0, 0.8, -1.5)   # tame sibilance/hiss
+        x = _compressor(x, sr, threshold_db=-18.0, ratio=3.0, makeup_db=2.0)
+        x = _denoise_gate(x, sr, over_floor_db=9.0, ratio=2.5, min_gain_db=-12.0)
         return _normalize(x, target_peak=0.85)  # ~-1.4 dBFS headroom
 
     if mode == "karaoke":
