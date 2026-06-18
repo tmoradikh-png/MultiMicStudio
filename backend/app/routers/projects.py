@@ -169,7 +169,7 @@ def _ensure_enhanced(storage, session_id: str, stereo_url: str, mode: str) -> st
     stack/duplicate audio. Does NOT change the natural mix or audio logic.
     """
     key = f"projects/{session_id}/final_mix_{mode}.wav"
-    if Path(storage.path(key)).exists():
+    if storage.exists(key):
         return storage.public_url(key)
     src = storage.path(key_to_relpath(stereo_url))
     data, sr = sf.read(src, dtype="float32", always_2d=True)

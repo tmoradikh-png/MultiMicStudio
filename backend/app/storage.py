@@ -77,6 +77,10 @@ class Storage(ABC):
         """Return a local filesystem path for processing (download if remote)."""
 
     @abstractmethod
+    def exists(self, key: str) -> bool:
+        """Return True if an object is already stored under `key`."""
+
+    @abstractmethod
     def public_url(self, key: str) -> str:
         """Return a URL the client can use to fetch the file (unsigned)."""
 
@@ -114,6 +118,9 @@ class LocalStorage(Storage):
 
     def path(self, key: str) -> str:
         return str(self._full(key))
+
+    def exists(self, key: str) -> bool:
+        return self._full(key).is_file()
 
     def public_url(self, key: str) -> str:
         # Served by the /files route in main.py.
@@ -161,6 +168,15 @@ class S3Storage(Storage):
         local.parent.mkdir(parents=True, exist_ok=True)
         self._client.download_file(self.bucket, key, str(local))
         return str(local)
+
+    def exists(self, key: str) -> bool:
+        from botocore.exceptions import ClientError
+
+        try:
+            self._client.head_object(Bucket=self.bucket, Key=key)
+            return True
+        except ClientError:
+            return False
 
     def public_url(self, key: str) -> str:
         base = settings.s3_public_base_url.rstrip("/")
