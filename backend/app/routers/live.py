@@ -52,6 +52,13 @@ def live_publish_page() -> FileResponse:
     return FileResponse(str(_STATIC_DIR / "publish.html"))
 
 
+@router.get("/mic")
+def live_mic_page() -> FileResponse:
+    """Single-phone live microphone: capture -> process -> play out of whatever is
+    connected to THIS phone (Bluetooth speaker / wired). No room, no listener."""
+    return FileResponse(str(_STATIC_DIR / "live_mic.html"))
+
+
 @router.get("/listen")
 def live_listen_page() -> FileResponse:
     return FileResponse(str(_STATIC_DIR / "listen.html"))

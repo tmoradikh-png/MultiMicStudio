@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>MultiMic — Live Mic</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, "Segoe UI", Arial, sans-serif; margin: 0;
+    background: #0f1419; color: #e6e6e6; }
+  .wrap { max-width: 520px; margin: 0 auto; padding: 24px 20px 60px; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  .sub { color: #9aa4af; font-size: 14px; line-height: 1.5; margin: 0 0 18px; }
+  label { display: block; font-size: 13px; color: #9aa4af; margin: 12px 0 4px; }
+  button { width: 100%; margin-top: 16px; padding: 16px; border: 0;
+    border-radius: 12px; font-size: 17px; font-weight: 700; cursor: pointer; }
+  #go { background: #16a34a; color: #fff; }
+  #go.live { background: #dc2626; }
+  #mute { background: #334155; color: #e6e6e6; margin-top: 10px; font-size: 15px; }
+  .status { margin-top: 18px; background: #1a212b; border: 1px solid #2a3441;
+    border-radius: 12px; padding: 14px; font-size: 14px; }
+  .status .line { display: flex; justify-content: space-between; padding: 4px 0;
+    align-items: center; }
+  .status .k { color: #8b96a2; }
+  .meter { height: 12px; background: #0b0f14; border-radius: 6px; overflow: hidden;
+    margin-top: 10px; }
+  .meter > div { height: 100%; width: 0%; background: #22c55e; transition: width .08s; }
+  .pill { font-size: 12px; padding: 2px 9px; border-radius: 999px; }
+  .ok { background: #064e3b; color: #6ee7b7; }
+  .bad { background: #7f1d1d; color: #fca5a5; }
+  .warn { background: #78350f; color: #fcd34d; }
+  .fb { margin-top: 12px; border-radius: 10px; padding: 12px 14px; font-size: 13px;
+    line-height: 1.5; display: none; }
+  .fb.show { display: block; }
+  .fb.high { background: #3a1212; border: 1px solid #7f1d1d; color: #fca5a5; }
+  .toggle { display: flex; align-items: center; gap: 10px; margin-top: 16px;
+    font-size: 14px; color: #cdd5df; }
+  .toggle input { width: 20px; height: 20px; }
+  .gainrow { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+  .gainrow input[type=range] { flex: 1; }
+  .out { margin-top: 16px; background: #102a1c; border: 1px solid #1f5135;
+    border-radius: 10px; padding: 12px 14px; font-size: 13px; color: #a7f3d0;
+    line-height: 1.5; }
+  .note { font-size: 12px; color: #6b7480; margin-top: 16px; line-height: 1.55; }
+  #saved { margin-top: 14px; display: none; }
+  #saved a { color: #6ee7b7; font-weight: 700; }
+  audio { width: 100%; margin-top: 8px; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>🎙️ Live microphone</h1>
+    <p class="sub">
+      This phone becomes a live mic. Your voice plays straight out of whatever is
+      connected to the phone — a <strong>Bluetooth speaker</strong> or
+      <strong>wired headphones/speaker</strong>. Connect that first, then go live.
+    </p>
+
+    <div class="out" id="out">
+      🔌 <strong>Output:</strong> your phone's currently connected output
+      (Bluetooth / wired / built-in speaker). Connect a speaker or headphones
+      before going live to avoid squealing (feedback).
+    </div>
+
+    <button id="go">Go live</button>
+    <button id="mute" hidden>Mute</button>
+
+    <label class="toggle">
+      <input id="enhance" type="checkbox" checked />
+      Clear-voice processing (noise gate + voice EQ + leveling)
+    </label>
+    <label class="toggle">
+      <input id="save" type="checkbox" />
+      Also save a recording of this session
+    </label>
+    <label class="toggle">
+      <input id="autoreduce" type="checkbox" checked />
+      Auto-lower the mic if feedback (squealing) is detected
+    </label>
+
+    <label for="gain">Volume</label>
+    <div class="gainrow">
+      <span>🔉</span>
+      <input id="gain" type="range" min="0" max="200" value="100" />
+      <span id="gainval" style="width:42px;text-align:right;">100%</span>
+    </div>
+
+    <div id="fb" class="fb high">
+      <strong>⚠️ Feedback risk: High.</strong>
+      Move the phone away from the speaker, lower the volume, or use headphones.
+      <span id="fbauto"></span>
+    </div>
+
+    <div class="status">
+      <div class="line"><span class="k">Status</span><span id="st" class="pill bad">off</span></div>
+      <div class="line"><span class="k">Feedback risk</span><span id="fbpill" class="pill ok">Low</span></div>
+      <div class="line"><span class="k">Mic level</span><span id="lvl">0%</span></div>
+      <div class="meter"><div id="bar"></div></div>
+    </div>
+
+    <div id="saved">
+      <strong>Saved recording</strong>
+      <audio id="savedAudio" controls></audio>
+      <div><a id="savedLink" download="live-recording.webm">⬇ Download recording</a></div>
+    </div>
+
+    <div class="note">
+      Keep this screen open and the phone unlocked while live. Bluetooth speakers
+      add a short delay (about a quarter second) — wired output is near-instant.
+      Built-in speaker will squeal unless the mic is far from it.
+    </div>
+  </div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let ctx, source, gainNode, hp, peak, comp, outBus, analyser, stream;
+let recDest, recorder, recChunks = [];
+let live = false, muted = false;
+let micGain = 1.0, userGain = 1.0;
+let fbStreak = 0, okStreak = 0, freqBuf = null;
+
+// Launched from the app with ?save=1 to pre-tick "save".
+const _qp = new URLSearchParams(location.search);
+if (_qp.get("save") === "1") $("save").checked = true;
+
+function setStatus(t, cls) { const s = $("st"); s.textContent = t; s.className = "pill " + cls; }
+function setPill(id, t, cls) { const e = $(id); e.textContent = t; e.className = "pill " + cls; }
+
+$("gain").oninput = () => {
+  userGain = Number($("gain").value) / 100;
+  $("gainval").textContent = $("gain").value + "%";
+  applyGain();
+};
+function applyGain() {
+  if (gainNode && ctx) gainNode.gain.setTargetAtTime(micGain * userGain, ctx.currentTime, 0.03);
+}
+
+async function goLive() {
+  if (live) { stop(); return; }
+  try {
+    // For a live PA we want the raw voice; the browser's own echoCancellation can
+    // fight a real speaker, so we keep light NS/AGC but no echo cancel.
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: true, autoGainControl: true },
+    });
+  } catch (e) {
+    setStatus("mic blocked", "bad");
+    alert("Microphone permission denied or unavailable.\n\n" + e);
+    return;
+  }
+
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  await ctx.resume();
+  source = ctx.createMediaStreamSource(stream);
+
+  // Processing chain:  mic -> gain -> [highpass -> presence EQ -> compressor] -> outBus
+  gainNode = ctx.createGain();
+  micGain = 1.0;
+  applyGain();
+
+  hp = ctx.createBiquadFilter();
+  hp.type = "highpass"; hp.frequency.value = 90;     // cut rumble/handling
+  peak = ctx.createBiquadFilter();
+  peak.type = "peaking"; peak.frequency.value = 2800; peak.Q.value = 0.9; peak.gain.value = 3;
+  comp = ctx.createDynamicsCompressor();
+  comp.threshold.value = -24; comp.knee.value = 24; comp.ratio.value = 3;
+  comp.attack.value = 0.005; comp.release.value = 0.2;
+  outBus = ctx.createGain();
+
+  analyser = ctx.createAnalyser();
+  analyser.fftSize = 2048; analyser.smoothingTimeConstant = 0.5;
+  freqBuf = new Uint8Array(analyser.frequencyBinCount);
+
+  rebuildChain();
+
+  // Live output -> the phone's connected output (Bluetooth / wired / speaker).
+  outBus.connect(ctx.destination);
+  outBus.connect(analyser);
+
+  // Optional: save a recording of exactly what is going out.
+  if ($("save").checked && window.MediaRecorder) {
+    try {
+      recDest = ctx.createMediaStreamDestination();
+      outBus.connect(recDest);
+      const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : (MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4" : "");
+      recorder = mime ? new MediaRecorder(recDest.stream, { mimeType: mime })
+                      : new MediaRecorder(recDest.stream);
+      recChunks = [];
+      recorder.ondataavailable = (e) => { if (e.data && e.data.size) recChunks.push(e.data); };
+      recorder.onstop = finalizeRecording;
+      recorder.start();
+    } catch (e) { recorder = null; }
+  }
+
+  live = true;
+  muted = false;
+  setStatus("LIVE", "ok");
+  $("go").textContent = "Stop";
+  $("go").classList.add("live");
+  $("mute").hidden = false;
+  $("saved").style.display = "none";
+  levelLoop();
+  feedbackLoop();
+}
+
+// (Re)wire the chain depending on whether clear-voice processing is on.
+function rebuildChain() {
+  try { source.disconnect(); } catch (_) {}
+  try { gainNode.disconnect(); } catch (_) {}
+  try { hp.disconnect(); peak.disconnect(); comp.disconnect(); } catch (_) {}
+  source.connect(gainNode);
+  if ($("enhance").checked) {
+    gainNode.connect(hp); hp.connect(peak); peak.connect(comp); comp.connect(outBus);
+  } else {
+    gainNode.connect(outBus);
+  }
+}
+$("enhance").onchange = () => { if (live) rebuildChain(); };
+
+function levelLoop() {
+  if (!live || !analyser) return;
+  analyser.getByteTimeDomainData(freqBuf);
+  let sum = 0;
+  for (let i = 0; i < freqBuf.length; i++) { const v = (freqBuf[i] - 128) / 128; sum += v * v; }
+  const rms = Math.sqrt(sum / freqBuf.length);
+  const pct = Math.min(100, Math.round(rms * 220));
+  $("bar").style.width = pct + "%";
+  $("lvl").textContent = pct + "%";
+  setTimeout(levelLoop, 100);
+}
+
+// Acoustic feedback shows as a strong, sustained narrow-band tone (one FFT bin
+// dwarfs the average). Warn and optionally duck the mic until it clears.
+function feedbackLoop() {
+  if (!live || !analyser) return;
+  analyser.getByteFrequencyData(freqBuf);
+  let pk = 0, total = 0;
+  for (let i = 2; i < freqBuf.length; i++) { total += freqBuf[i]; if (freqBuf[i] > pk) pk = freqBuf[i]; }
+  const avg = total / (freqBuf.length - 2);
+  const ratio = avg > 0 ? pk / avg : 0;
+  const risky = pk > 150 && ratio > 14;
+  if (risky) { fbStreak++; okStreak = 0; } else { okStreak++; if (okStreak > 6) fbStreak = 0; }
+
+  if (fbStreak >= 4) {
+    setPill("fbpill", "High", "bad");
+    $("fb").classList.add("show");
+    if ($("autoreduce").checked && micGain > 0.25) {
+      micGain = Math.max(0.25, micGain - 0.12);
+      applyGain();
+      $("fbauto").textContent = `Mic auto-lowered to ${Math.round(micGain * 100)}%.`;
+    }
+  } else {
+    setPill("fbpill", "Low", "ok");
+    $("fb").classList.remove("show");
+    if (micGain < 1.0 && okStreak > 12) {
+      micGain = Math.min(1.0, micGain + 0.05);
+      applyGain();
+      if (micGain >= 0.999) $("fbauto").textContent = "";
+    }
+  }
+  setTimeout(feedbackLoop, 200);
+}
+
+function finalizeRecording() {
+  if (!recChunks.length) return;
+  const blob = new Blob(recChunks, { type: recChunks[0].type || "audio/webm" });
+  const url = URL.createObjectURL(blob);
+  $("savedAudio").src = url;
+  const a = $("savedLink");
+  a.href = url;
+  a.download = "live-recording" + (blob.type.includes("mp4") ? ".m4a" : ".webm");
+  $("saved").style.display = "block";
+}
+
+function stop() {
+  live = false;
+  $("go").textContent = "Go live";
+  $("go").classList.remove("live");
+  $("mute").hidden = true;
+  $("bar").style.width = "0%";
+  setStatus("off", "bad");
+  setPill("fbpill", "Low", "ok");
+  $("fb").classList.remove("show");
+  try { if (recorder && recorder.state !== "inactive") recorder.stop(); } catch (_) {}
+  recorder = null;
+  try { outBus && outBus.disconnect(); } catch (_) {}
+  try { analyser && analyser.disconnect(); } catch (_) {}
+  try { comp && comp.disconnect(); } catch (_) {}
+  try { source && source.disconnect(); } catch (_) {}
+  try { stream && stream.getTracks().forEach((t) => t.stop()); } catch (_) {}
+  try { ctx && ctx.close(); } catch (_) {}
+}
+
+$("go").onclick = goLive;
+$("mute").onclick = () => {
+  muted = !muted;
+  $("mute").textContent = muted ? "Unmute" : "Mute";
+  $("mute").style.background = muted ? "#b45309" : "#334155";
+  // Muting = drop the live output bus to silence (recording is muted too).
+  if (outBus && ctx) outBus.gain.setTargetAtTime(muted ? 0 : 1, ctx.currentTime, 0.02);
+};
+window.addEventListener("pagehide", stop);
+</script>
+</body>
+</html>
