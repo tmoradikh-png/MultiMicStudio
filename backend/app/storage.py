@@ -22,7 +22,7 @@ import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import BinaryIO
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from app.config import get_settings
 
@@ -200,4 +200,13 @@ def key_to_relpath(file_url: str) -> str:
     idx = url.find(marker)
     if idx != -1:
         return url[idx + len(marker):]
+    # Absolute object-storage URL (S3 / R2 / Spaces presigned, or a CDN base):
+    # strip scheme://host, then an optional leading bucket segment, so a stored
+    # public/presigned URL round-trips back to its object key.
+    if "://" in url:
+        path = urlparse(url).path.lstrip("/")
+        bucket = settings.s3_bucket
+        if bucket and path.startswith(f"{bucket}/"):
+            path = path[len(bucket) + 1:]
+        return path
     return url.removeprefix("/files/")

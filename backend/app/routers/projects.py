@@ -296,18 +296,21 @@ def get_project_outputs(
 
     # Quality badge (best-effort; reuses the QA bench checks).
     badge = None
-    raw_paths = [
-        storage.path(key_to_relpath(r.file_url)) for r in recs if r.file_url
-    ]
-    natural_path = (
-        storage.path(key_to_relpath(stereo_url)) if stereo_url else None
-    )
-    studio_path = (
-        storage.path(key_to_relpath(studio_url)) if studio_url else None
-    )
-    result = quality.evaluate(natural_path, raw_paths, studio_path)
-    if result is not None:
-        badge = QualityBadge(**result)
+    try:
+        raw_paths = [
+            storage.path(key_to_relpath(r.file_url)) for r in recs if r.file_url
+        ]
+        natural_path = (
+            storage.path(key_to_relpath(stereo_url)) if stereo_url else None
+        )
+        studio_path = (
+            storage.path(key_to_relpath(studio_url)) if studio_url else None
+        )
+        result = quality.evaluate(natural_path, raw_paths, studio_path)
+        if result is not None:
+            badge = QualityBadge(**result)
+    except Exception:  # noqa: BLE001 — badge is advisory; never fail the response
+        badge = None
 
     return ProjectOutputs(
         session_id=session_id,
