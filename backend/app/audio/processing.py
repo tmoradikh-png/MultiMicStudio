@@ -367,15 +367,18 @@ def mix_tracks(tracks: list[LoadedTrack], offsets: dict[str, int]) -> tuple[np.n
 def _default_pans(n: int) -> list[float]:
     """Stereo pan position per track in [-1 (left) .. +1 (right)].
 
-    One track is centered; two are placed clearly left/right (Phone A left, Phone B
-    right); more are spread evenly. This is intentional placement for audible width,
-    not a claim of true stereo capture.
+    One track is centered; two are placed wide left/right (Phone A left, Phone B
+    right); more are spread evenly across a wide field. Two physically separated
+    phones are acoustically a spaced (AB) stereo pair, so the image should be
+    *wider and more spacious* than a single phone's built-in mics. The ±0.9
+    placement gives that real spaced-pair width while stopping short of a hollow,
+    hard-panned ±1.0 "ping-pong" image, keeping some centre coherence.
     """
     if n <= 1:
         return [0.0]
     if n == 2:
-        return [-0.7, 0.7]
-    return list(np.linspace(-0.8, 0.8, n))
+        return [-0.9, 0.9]
+    return list(np.linspace(-0.9, 0.9, n))
 
 
 # --- Natural-mix quality cleanup --------------------------------------------
@@ -469,6 +472,44 @@ def _normalize_peak(stereo: np.ndarray, target_dbfs: float = -1.5) -> np.ndarray
     return (stereo * (target / peak)).astype(np.float32)
 
 
+def _widen_stereo(
+    stereo: np.ndarray, target_corr: float = 0.15, max_gain: float = 2.0
+) -> np.ndarray:
+    """Adaptively widen a too-narrow image toward a natural spaced-pair correlation.
+
+    Two phones placed apart should sound like a spaced (AB) stereo mic. When acoustic
+    bleed pulls the two channels together (high L/R correlation = narrow image), this
+    boosts the side (L-R) signal just enough to reach ``target_corr`` — the moderate
+    correlation of a natural, mono-safe spaced pair. Images already that wide are left
+    untouched (never narrowed), and the side gain is clamped so the channels never go
+    anti-phase (which would sound hollow and collapse in a mono down-mix).
+
+    Closed form: for L' = mid + k·side, R' = mid − k·side on a balanced image
+    (true after :func:`_balance_stereo`, where mid/side are uncorrelated), the L/R
+    correlation is (vM − k²·vS) / (vM + k²·vS). Solving for the target gives the k
+    below. Sample count and per-sample timing are unchanged.
+    """
+    if stereo.shape[0] == 0:
+        return stereo
+    left = stereo[:, 0].astype(np.float64)
+    right = stereo[:, 1].astype(np.float64)
+    mid = 0.5 * (left + right)
+    side = 0.5 * (left - right)
+    v_m = float(np.var(mid))
+    v_s = float(np.var(side))
+    if v_s <= 1e-12 or v_m <= 1e-12:
+        return stereo  # mono or silent: nothing to widen
+    k2 = v_m * (1.0 - target_corr) / (v_s * (1.0 + target_corr))
+    k = float(np.sqrt(max(k2, 0.0)))
+    if k <= 1.0:
+        return stereo  # already at/over the target width — do not narrow it
+    k = min(k, max_gain)
+    out = np.empty_like(stereo)
+    out[:, 0] = (mid + k * side).astype(np.float32)
+    out[:, 1] = (mid - k * side).astype(np.float32)
+    return out
+
+
 def mix_stereo(
     tracks: list[LoadedTrack],
     offsets: dict[str, int],
@@ -483,7 +524,9 @@ def mix_stereo(
          movement inside each track is kept.
       3. Constant-power panning for even perceived loudness across the field.
       4. Gentle overall L/R balance correction (preserves panning movement).
-      5. Peak-normalize to a safe headroom target (no clipping, no tanh colour).
+      5. Adaptively widen a too-narrow image toward a natural spaced-pair stereo
+         (only when acoustic bleed has pulled the channels together).
+      6. Peak-normalize to a safe headroom target (no clipping, no tanh colour).
     Sample count is never changed, so enhancement modes stay length-matched.
     """
     sr = tracks[0].sample_rate
@@ -519,8 +562,9 @@ def mix_stereo(
         stereo[start : start + len(seg), 0] += seg * gain_l
         stereo[start : start + len(seg), 1] += seg * gain_r
 
-    # 4. Gentle overall balance, then 5. safe headroom.
+    # 4. Gentle overall balance, 5. adaptive width, then 6. safe headroom.
     stereo = _balance_stereo(stereo)
+    stereo = _widen_stereo(stereo)
     stereo = _normalize_peak(stereo, target_peak_dbfs)
     return stereo, sr
 
