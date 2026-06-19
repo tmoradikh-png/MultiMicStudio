@@ -4,6 +4,8 @@ A participant registers a recording, then uploads the audio file. The endpoint a
 the full file in one request for the MVP; the contract (register -> upload) already
 matches a future resumable/chunked uploader without changing the client flow.
 """
+from pathlib import Path
+
 from fastapi import (
     APIRouter,
     Depends,
@@ -30,9 +32,38 @@ from app.models import (
     User,
 )
 from app.schemas import RecordingOut
-from app.storage import get_storage
+from app.storage import get_storage, key_to_relpath
 
 router = APIRouter(prefix="/recordings", tags=["recordings"])
+
+
+def _probe_uploaded_audio(storage, file_url: str) -> tuple[float | None, int | None]:
+    """Read true duration/sample-rate from the saved upload.
+
+    Some iOS recordings occasionally report a very small duration from the client
+    metadata despite the file being longer. Measuring server-side prevents these
+    bad hints from poisoning dedup/alignment decisions.
+    """
+    # Lazy imports: keep the heavy audio stack (numpy/scipy/soundfile) out of
+    # process startup so a signaling-only / P2P deployment stays lightweight. The
+    # cost is paid only the first time a recording is actually probed.
+    import soundfile as sf
+
+    from app.audio import processing
+
+    wav_path: str | None = None
+    try:
+        src = storage.path(key_to_relpath(file_url))
+        wav_path = processing.decode_to_wav(src)
+        info = sf.info(wav_path)
+        if info.samplerate and info.frames:
+            return float(info.frames / info.samplerate), int(info.samplerate)
+    except Exception:
+        return None, None
+    finally:
+        if wav_path:
+            Path(wav_path).unlink(missing_ok=True)
+    return None, None
 
 
 @router.post("", response_model=RecordingOut, status_code=status.HTTP_201_CREATED)
@@ -103,6 +134,11 @@ def upload_recording(
 
     recording.file_url = file_url
     recording.upload_status = UploadStatus.uploaded
+    measured_duration, measured_sr = _probe_uploaded_audio(storage, file_url)
+    if measured_duration is not None:
+        recording.duration_seconds = measured_duration
+    if measured_sr is not None:
+        recording.sample_rate = measured_sr
     db.commit()
     db.refresh(recording)
     return recording

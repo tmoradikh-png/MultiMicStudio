@@ -141,6 +141,13 @@ async def _handle_control(room_code: str, peer, text: str) -> None:
             pass
         return
 
+    if kind == "signal":
+        # WebRTC negotiation passthrough (SDP offer/answer + ICE candidates).
+        # The server only forwards these small JSON messages to the other peer;
+        # the resulting audio/data flows phone-to-phone, never through here.
+        await registry.relay_signal(room_code, peer, msg)
+        return
+
     if kind == "status":
         changed = False
         if "muted" in msg:

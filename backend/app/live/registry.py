@@ -180,6 +180,39 @@ class LiveRegistry:
             except Exception:  # noqa: BLE001
                 continue
 
+    async def relay_signal(
+        self, room_code: str, sender: Peer, message: dict
+    ) -> int:
+        """Forward one WebRTC signaling message (SDP offer/answer or ICE candidate).
+
+        This is the *only* thing the server does for the P2P audio path: it relays
+        small JSON negotiation messages so two phones can find each other. Audio
+        never flows through here — once the peer connection is established the
+        media goes phone-to-phone directly.
+
+        Routing: if the message carries a ``to`` peer id, deliver only to that
+        peer; otherwise deliver to every *other* peer in the room (the common
+        2-phone case). The sender's id is stamped as ``from`` so the receiver can
+        reply. Returns the number of peers the message reached.
+        """
+        room = self._rooms.get(room_code)
+        if room is None:
+            return 0
+        target_id = message.get("to")
+        out = {**message, "from": sender.id}
+        delivered = 0
+        for peer in list(room.peers.values()):
+            if peer.id == sender.id:
+                continue
+            if target_id and peer.id != target_id:
+                continue
+            try:
+                await peer.ws.send_json(out)
+                delivered += 1
+            except Exception:  # noqa: BLE001 — drop on broken socket
+                continue
+        return delivered
+
     async def broadcast_roster(self, room_code: str) -> None:
         room = self._rooms.get(room_code)
         if room is None:

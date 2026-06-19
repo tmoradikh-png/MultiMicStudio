@@ -96,12 +96,22 @@ def _select_input_recordings(db, session_id: str) -> list[Recording]:
         # fall back to all valid rows so processing still produces output.
         in_take = valid
 
-    latest_per_participant: dict[str, Recording] = {}
+    best_per_participant: dict[str, Recording] = {}
     for r in in_take:
-        # asc() order means later rows overwrite earlier -> keeps the newest.
-        latest_per_participant[r.participant_id] = r
+        prev = best_per_participant.get(r.participant_id)
+        if prev is None:
+            best_per_participant[r.participant_id] = r
+            continue
+        # Prefer the most complete capture in this take. If duration metadata is
+        # missing or equal, fall back to the newest upload.
+        prev_dur = prev.duration_seconds or 0.0
+        cur_dur = r.duration_seconds or 0.0
+        if cur_dur > prev_dur + 0.05:
+            best_per_participant[r.participant_id] = r
+        elif abs(cur_dur - prev_dur) <= 0.05 and r.created_at > prev.created_at:
+            best_per_participant[r.participant_id] = r
 
-    return list(latest_per_participant.values())
+    return list(best_per_participant.values())
 
 
 def process_session(session_id: str, mode: str = effects.DEFAULT_MODE) -> None:
@@ -127,6 +137,19 @@ def process_session(session_id: str, mode: str = effects.DEFAULT_MODE) -> None:
         recordings = _select_input_recordings(db, session_id)
         if not recordings:
             raise RuntimeError("No uploaded recordings to process for this session.")
+
+        # Guard against accidental truncated uploads (for example a 2s retry)
+        # being mixed with a full take. Producing a mix in that case sounds
+        # badly delayed/laggy, so fail fast with an actionable message instead.
+        if len(recordings) >= 2:
+            ds = [r.duration_seconds or 0.0 for r in recordings]
+            min_d, max_d = min(ds), max(ds)
+            if min_d > 0.0 and min_d <= 3.0 and (max_d - min_d) >= 1.8:
+                raise RuntimeError(
+                    "One participant upload is much shorter than the others "
+                    f"({min_d:.1f}s vs {max_d:.1f}s). "
+                    "Re-record this take, then process again."
+                )
 
         take_id = session.current_take_id or (recordings[0].take_id if recordings else None)
         logger.info(

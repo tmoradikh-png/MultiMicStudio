@@ -2,11 +2,9 @@
 import tempfile
 from pathlib import Path
 
-import soundfile as sf
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.audio import effects, processing, quality
 from app.database import get_db
 from app.deps import Principal, get_current_user, get_principal
 from app.models import (
@@ -27,7 +25,6 @@ from app.schemas import (
     QualityReport,
 )
 from app.storage import get_storage, key_to_relpath
-from app.worker.tasks import _select_input_recordings, dispatch_processing
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -40,6 +37,11 @@ def process_session(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> ProcessedProject:
+    # Lazy imports: keep the audio engine (numpy/scipy/soundfile) and worker out
+    # of process startup so a signaling-only / P2P deployment stays lightweight.
+    from app.audio import effects
+    from app.worker.tasks import dispatch_processing
+
     session = db.get(RecordingSession, session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -49,7 +51,6 @@ def process_session(
     mode = (body.mode if body else None) or effects.DEFAULT_MODE
     if mode not in effects.ENHANCEMENT_MODES:
         raise HTTPException(status_code=400, detail=f"Unknown enhancement mode: {mode}")
-
     project = session.project
     if project is None:
         project = ProcessedProject(session_id=session_id)
@@ -77,6 +78,10 @@ def enhance_project(
     stacked/duplicated audio. The natural stereo mix is always preserved for
     comparison. Selecting the "natural" mode just clears the enhanced render.
     """
+    import soundfile as sf
+
+    from app.audio import effects, processing
+
     session = db.get(RecordingSession, session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -170,6 +175,10 @@ def _ensure_enhanced(storage, session_id: str, stereo_url: str, mode: str) -> st
     mix using the exact app preset code. Length-preserving, so it can never
     stack/duplicate audio. Does NOT change the natural mix or audio logic.
     """
+    import soundfile as sf
+
+    from app.audio import effects, processing
+
     key = f"projects/{session_id}/final_mix_{mode}.wav"
     if storage.exists(key):
         return storage.public_url(key)
@@ -181,6 +190,25 @@ def _ensure_enhanced(storage, session_id: str, stereo_url: str, mode: str) -> st
         processing.write_wav(enhanced, sr, out)
         with open(out, "rb") as fh:
             return storage.save(key, fh)
+
+
+def _cached_enhanced_or_fallback(
+    storage,
+    session_id: str,
+    mode: str,
+    fallback_url: str | None,
+) -> str | None:
+    """Return an already-rendered preset if present, else a lightweight fallback.
+
+    Important for small hosted instances: GET /outputs must stay cheap and must
+    never try to allocate/process large audio files on the request path. Preset
+    rendering is still available via processing and the explicit /enhance route;
+    this helper only reads cache state and falls back to an existing playable file.
+    """
+    key = f"projects/{session_id}/final_mix_{mode}.wav"
+    if storage.exists(key):
+        return storage.public_url(key)
+    return fallback_url
 
 
 def _present(storage, url: str | None) -> str | None:
@@ -209,6 +237,8 @@ def get_project_outputs(
     demand and cached), and the mono down-mix. The quality badge reuses the QA
     bench checks so it matches the bench report. Read-only; never re-mixes.
     """
+    from app.worker.tasks import _select_input_recordings
+
     session = db.get(RecordingSession, session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -241,7 +271,11 @@ def get_project_outputs(
             )
         )
 
-    stereo_url = project.final_audio_stereo_url
+    mono_url = project.final_audio_url
+    # Backward-compatible fallback: older/partial jobs may have only mono stored.
+    # Expose mono as "natural" rather than "Not available" so presets and
+    # playback remain usable; newer jobs still provide true stereo here.
+    stereo_url = project.final_audio_stereo_url or mono_url
     outputs.append(
         OutputItem(
             role="natural_stereo",
@@ -252,42 +286,35 @@ def get_project_outputs(
         )
     )
 
-    # Enhanced presets — rendered on demand from the natural stereo mix.
+    # Enhanced presets — do NOT render them on the normal GET /outputs path.
+    # Hosted instances can run out of memory if every page load decodes/renders
+    # several large files. Instead, serve cached preset files when present, and
+    # otherwise fall back to an existing playable mix so all roles stay visible.
     studio_url = None
-    if stereo_url:
-        for mode, label in (
-            ("studio_voice", "Studio Voice"),
-            ("podcast", "Podcast / Clean Voice"),
-            ("karaoke", "Singing / Karaoke"),
-            ("party", "Party / Room"),
+    preset_fallback_url = stereo_url or mono_url
+    for mode, label in (
+        ("studio_voice", "Studio Voice"),
+        ("podcast", "Podcast / Clean Voice"),
+        ("karaoke", "Singing / Karaoke"),
+        ("party", "Party / Room"),
+    ):
+        url = _cached_enhanced_or_fallback(
+            storage, session_id, mode, preset_fallback_url
+        )
+        if mode == "studio_voice" and storage.exists(
+            f"projects/{session_id}/final_mix_{mode}.wav"
         ):
-            try:
-                url = _ensure_enhanced(storage, session_id, stereo_url, mode)
-            except Exception:  # noqa: BLE001
-                url = None
-            if mode == "studio_voice":
-                studio_url = url
-            outputs.append(
-                OutputItem(
-                    role=mode,
-                    label=label,
-                    url=_present(storage, url),
-                    kind="mix",
-                    available=bool(url),
-                )
+            studio_url = url
+        outputs.append(
+            OutputItem(
+                role=mode,
+                label=label,
+                url=_present(storage, url),
+                kind="mix",
+                available=bool(url),
             )
-    else:
-        for mode, label in (
-            ("studio_voice", "Studio Voice"),
-            ("podcast", "Podcast / Clean Voice"),
-            ("karaoke", "Singing / Karaoke"),
-            ("party", "Party / Room"),
-        ):
-            outputs.append(
-                OutputItem(role=mode, label=label, url=None, kind="mix", available=False)
-            )
+        )
 
-    mono_url = project.final_audio_url
     outputs.append(
         OutputItem(
             role="mono_downmix",
@@ -304,9 +331,7 @@ def get_project_outputs(
         raw_paths = [
             storage.path(key_to_relpath(r.file_url)) for r in recs if r.file_url
         ]
-        natural_path = (
-            storage.path(key_to_relpath(stereo_url)) if stereo_url else None
-        )
+        natural_path = storage.path(key_to_relpath(stereo_url)) if stereo_url else None
         studio_path = (
             storage.path(key_to_relpath(studio_url)) if studio_url else None
         )
@@ -336,6 +361,9 @@ def get_quality_report(
     session, so a normal user sees Sync / Stereo / Noise / Clipping / Duplicate /
     Score right in the app. Read-only; reuses the QA bench measurements.
     """
+    from app.audio import quality
+    from app.worker.tasks import _select_input_recordings
+
     session = db.get(RecordingSession, session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -360,10 +388,9 @@ def get_quality_report(
             raw_paths = [
                 storage.path(key_to_relpath(r.file_url)) for r in recs if r.file_url
             ]
+            natural_url = project.final_audio_stereo_url or project.final_audio_url
             natural_path = (
-                storage.path(key_to_relpath(project.final_audio_stereo_url))
-                if project.final_audio_stereo_url
-                else None
+                storage.path(key_to_relpath(natural_url)) if natural_url else None
             )
             result = quality.report(natural_path, raw_paths)
             if result is not None:

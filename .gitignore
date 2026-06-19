@@ -16,6 +16,9 @@ backend/bench_out_beta/
 backend/bench_gui_*/
 **/_validate_*.py
 
+# Local backup snapshots (not source)
+backups/
+
 # --- Node (web + mobile) ---
 node_modules/
 .next/

@@ -625,6 +625,14 @@ def align_and_mix(
         # Single phone: write the raw track through unchanged (no overlay/repeat).
         t = tracks[0]
         write_wav(t.samples, sr, dest_wav_path)
+        stereo_out: str | None = None
+        if stereo_dest_path is not None:
+            # Keep output contracts consistent: even a one-phone session gets a
+            # natural stereo file (dual-mono), so dashboard "Natural stereo" and
+            # preset renders remain available instead of showing "Not available".
+            stereo = np.column_stack((t.samples, t.samples)).astype(np.float32)
+            write_wav(stereo, sr, stereo_dest_path)
+            stereo_out = stereo_dest_path
         marker = detect_marker_offset(t.samples, sr)
         stem_paths: dict[str, str] = {}
         if stems_dir is not None:
@@ -645,7 +653,7 @@ def align_and_mix(
                     "marker_ms": (marker / sr * 1000) if (marker is not None and sr) else -1.0,
                 }
             },
-            stereo_path=None,
+            stereo_path=stereo_out,
             stem_paths=stem_paths,
         )
 
