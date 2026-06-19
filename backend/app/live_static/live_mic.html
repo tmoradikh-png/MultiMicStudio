@@ -31,24 +31,27 @@
   .meter { height: 12px; background: #0b0f14; border-radius: 6px; overflow: hidden; margin-top: 10px; }
   .meter > div { height: 100%; width: 0%; background: #22c55e; transition: width .08s; }
   .note { font-size: 12px; color: #6b7480; margin-top: 16px; line-height: 1.55; }
+  body.embed .wrap { padding: 12px 12px 8px; }
+  body.embed .embed-hide { display: none !important; }
+  body.embed .status { margin-top: 0; }
 </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>🎙️ Live microphone</h1>
-    <p class="sub">
+    <h1 class="embed-hide">🎙️ Live microphone</h1>
+    <p class="sub embed-hide">
       This phone is one of the microphones. Enter the same <strong>room code</strong>
       on every phone, and on the <strong>Speaker</strong> device that plays the mix.
       All mics are gathered, mixed and processed live on the Speaker device.
     </p>
 
-    <label for="room">Room code (same on every device)</label>
-    <input id="room" autocapitalize="characters" autocomplete="off" placeholder="e.g. STAGE1" />
-    <label for="name">This mic's name</label>
-    <input id="name" autocomplete="off" placeholder="Mic 1" />
+    <label class="embed-hide" for="room">Room code (same on every device)</label>
+    <input class="embed-hide" id="room" autocapitalize="characters" autocomplete="off" placeholder="e.g. STAGE1" />
+    <label class="embed-hide" for="name">This mic's name</label>
+    <input class="embed-hide" id="name" autocomplete="off" placeholder="Mic 1" />
 
-    <button id="go">Go live</button>
-    <button id="mute" hidden>Mute</button>
+    <button class="embed-hide" id="go">Go live</button>
+    <button class="embed-hide" id="mute" hidden>Mute</button>
 
     <div class="status">
       <div class="line"><span class="k">Status</span><span id="st" class="pill bad">off</span></div>
@@ -58,7 +61,7 @@
       <div class="meter"><div id="bar"></div></div>
     </div>
 
-    <div class="note">
+    <div class="note embed-hide">
       Keep this screen open and the phone unlocked while live. The speaker output and
       any saving happen on the <em>Speaker</em> device — this phone only sends audio.
     </div>
@@ -75,6 +78,9 @@ $("name").value = localStorage.getItem("mm_live_name") || "";
 const _qp = new URLSearchParams(location.search);
 if (_qp.get("room")) $("room").value = _qp.get("room").toUpperCase();
 if (_qp.get("name")) $("name").value = _qp.get("name");
+const _autoStart = _qp.get("autostart") === "1";
+const _embed = _qp.get("embed") === "1";
+if (_embed) document.body.classList.add("embed");
 
 function setStatus(t, cls) { const s = $("st"); s.textContent = t; s.className = "pill " + cls; }
 function setPill(id, t, cls) { const e = $(id); e.textContent = t; e.className = "pill " + cls; }
@@ -190,6 +196,15 @@ function stop() {
   try { ctx && ctx.close(); } catch (_) {}
   try { ws && ws.close(); } catch (_) {}
 }
+
+window.addEventListener("load", () => {
+  if (!_autoStart) return;
+  // One-tap start from the mobile app: entering this page can immediately start
+  // publishing without requiring a second button press in the WebView.
+  setTimeout(() => {
+    if (!live) goLive().catch(() => undefined);
+  }, 120);
+});
 
 $("go").onclick = goLive;
 $("mute").onclick = () => {

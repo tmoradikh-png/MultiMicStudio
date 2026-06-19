@@ -48,44 +48,48 @@
   #saved { margin-top: 14px; display: none; }
   #saved a { color: #6ee7b7; font-weight: 700; }
   audio { width: 100%; margin-top: 8px; }
+  body.embed .wrap { padding: 12px 12px 8px; }
+  body.embed .embed-hide { display: none !important; }
+  body.embed .status { margin-top: 0; }
+  body.embed #saved { margin-top: 10px; }
 </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>🔊 Live output</h1>
-    <p class="sub">
+    <h1 class="embed-hide">🔊 Live output</h1>
+    <p class="sub embed-hide">
       This device (a phone <strong>or a PC's browser</strong>) gathers every
       microphone in the room, mixes them and processes them live with the sound you
       choose. You can <strong>play it out</strong> of whatever speaker is connected
       here, <strong>save a recording</strong>, or both.
     </p>
 
-    <div class="out">
+    <div class="out embed-hide">
       🔌 <strong>To play out loud:</strong> pair a Bluetooth speaker or plug in a
       wired one first — the live mix follows this device's audio output. For
       record-only, untick "play the mix out" below.
     </div>
 
-    <label for="room">Room code (same as the microphones)</label>
-    <input id="room" autocapitalize="characters" autocomplete="off" placeholder="e.g. STAGE1" />
+    <label class="embed-hide" for="room">Room code (same as the microphones)</label>
+    <input class="embed-hide" id="room" autocapitalize="characters" autocomplete="off" placeholder="e.g. STAGE1" />
 
-    <label>Live sound</label>
-    <div class="presets" id="presets"></div>
+    <label class="embed-hide">Live sound</label>
+    <div class="presets embed-hide" id="presets"></div>
 
-    <button id="go">Start</button>
-    <button id="mute" hidden>Mute output</button>
+    <button class="embed-hide" id="go">Start</button>
+    <button class="embed-hide" id="mute" hidden>Mute output</button>
 
-    <label class="toggle">
+    <label class="toggle embed-hide">
       <input id="playout" type="checkbox" checked />
       Play the live mix out this device's speaker
     </label>
-    <label class="toggle">
+    <label class="toggle embed-hide">
       <input id="save" type="checkbox" />
       Save a recording of the mix (download when you stop)
     </label>
 
-    <label for="vol">Volume</label>
-    <div style="display:flex;align-items:center;gap:12px;margin-top:6px;">
+    <label class="embed-hide" for="vol">Volume</label>
+    <div class="embed-hide" style="display:flex;align-items:center;gap:12px;margin-top:6px;">
       <span>🔉</span>
       <input id="vol" type="range" min="0" max="200" value="100" style="flex:1;" />
       <span id="volval" style="width:42px;text-align:right;">100%</span>
@@ -105,7 +109,7 @@
       <div><a id="savedLink" download="live-mix.webm">⬇ Download recording</a></div>
     </div>
 
-    <div class="note">
+    <div class="note embed-hide">
       Bluetooth output adds a short delay (about a quarter second); wired is
       near-instant. Keep the mics away from this speaker to avoid feedback.
     </div>
@@ -139,6 +143,9 @@ if (_qp.get("mode")) mode = _qp.get("mode");
 if (_qp.get("save") === "1") $("save").checked = true;
 // play=0 -> don't drive the physical speaker (record / monitor only).
 if (_qp.get("play") === "0") $("playout").checked = false;
+const _autoStart = _qp.get("autostart") === "1";
+const _embed = _qp.get("embed") === "1";
+if (_embed) document.body.classList.add("embed");
 
 function setStatus(t, cls) { const s = $("st"); s.textContent = t; s.className = "pill " + cls; }
 function setPill(id, t, cls) { const e = $(id); e.textContent = t; e.className = "pill " + cls; }
@@ -402,6 +409,15 @@ function stop() {
   try { ws && ws.close(); } catch (_) {}
   try { ctx && ctx.close(); } catch (_) {}
 }
+
+window.addEventListener("load", () => {
+  if (!_autoStart) return;
+  // One-tap start from the mobile app: entering this page can immediately start
+  // receiving/mixing without a second in-page tap in the WebView.
+  setTimeout(() => {
+    if (!on) start().catch(() => undefined);
+  }, 120);
+});
 
 $("go").onclick = start;
 $("mute").onclick = () => {
