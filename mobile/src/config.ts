@@ -12,7 +12,7 @@
 //   PowerShell:  $env:EXPO_PUBLIC_API_URL="https://api.example.com"; npx expo start
 //   or put EXPO_PUBLIC_API_URL=... in mobile/.env (see .env.example).
 
-const DEFAULT_API_BASE_URL = "http://192.168.3.19:8000";
+const DEFAULT_API_BASE_URL = "https://multimicstudio-production.up.railway.app";
 
 function resolveApiBaseUrl(): { url: string; fromEnv: boolean } {
   const raw = process.env.EXPO_PUBLIC_API_URL;
@@ -66,3 +66,13 @@ export const LIVE_BASE_URL = resolvedLive.url;
 
 // True when the live origin is secure (https), i.e. the microphone can be granted.
 export const LIVE_IS_SECURE = /^https:\/\//i.test(LIVE_BASE_URL);
+
+// WebSocket signaling URL for the native WebRTC P2P path. The server only relays
+// SDP/ICE through this socket; audio flows phone-to-phone, never through the
+// server. http(s) -> ws(s) so it follows whatever origin LIVE_BASE_URL uses.
+export function signalingUrl(roomCode: string, role: "publisher" | "listener", name: string): string {
+  const wsBase = LIVE_BASE_URL.replace(/^http/i, "ws");
+  const code = encodeURIComponent(roomCode.trim().toUpperCase());
+  const params = new URLSearchParams({ role, name: name.trim() || (role === "publisher" ? "Mic" : "Speaker") });
+  return `${wsBase}/live/ws/${code}?${params.toString()}`;
+}

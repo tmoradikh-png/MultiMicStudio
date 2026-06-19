@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { Pressable, SafeAreaView, ScrollView, Text, View } from "react-native";
 import { Audio } from "expo-av";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import {
@@ -46,6 +46,7 @@ export default function RecordScreen({ route, navigation }: Props) {
   const [phase, setPhase] = useState<Phase>("ready");
   const [elapsed, setElapsed] = useState(0);
   const [message, setMessage] = useState<string | null>(null);
+  const [statusSyncError, setStatusSyncError] = useState<string | null>(null);
   // Upload progress (0..1) + which retry attempt is running, for the upload bar.
   const [uploadPct, setUploadPct] = useState(0);
   const [uploadAttempt, setUploadAttempt] = useState<{ n: number; max: number } | null>(
@@ -147,10 +148,13 @@ export default function RecordScreen({ route, navigation }: Props) {
   useEffect(() => {
     if (isHost) return;
     let active = true;
-    const poll = setInterval(async () => {
+    let failCount = 0;
+    const pollOnce = async () => {
       try {
         const s = await api.getSessionStatus(session.id);
         if (!active) return;
+        failCount = 0;
+        setStatusSyncError(null);
         const idle =
           phaseRef.current === "ready" ||
           phaseRef.current === "uploaded" ||
@@ -165,14 +169,24 @@ export default function RecordScreen({ route, navigation }: Props) {
           // A brand-new take started: reset everything and begin recording it.
           resetForNewTake();
           takeIdRef.current = s.current_take_id;
-          setMessage("Host started a new take \u2014 recording now.");
+          setMessage("Host started a new take - recording now.");
           await beginRecording();
         } else if (s.status === "ended" && phaseRef.current === "recording") {
           await onStop();
         }
       } catch {
-        // Ignore transient poll errors; keep trying.
+        failCount += 1;
+        if (failCount >= 3) {
+          setStatusSyncError(
+            "This phone cannot sync with host status right now. Check network, then tap Start this phone now while host is recording.",
+          );
+        }
       }
+    };
+    // Run immediately so joiners do not wait for the first interval tick.
+    pollOnce().catch(() => undefined);
+    const poll = setInterval(async () => {
+      await pollOnce();
     }, 1500);
     return () => {
       active = false;
@@ -273,6 +287,32 @@ export default function RecordScreen({ route, navigation }: Props) {
   async function onRetryUpload() {
     if (finishedRef.current) {
       await doUpload(finishedRef.current);
+    }
+  }
+
+  // Fallback for a guest phone if host-status polling is blocked by network/token.
+  // Starts this device only when the host session is currently recording.
+  async function onGuestStartNow() {
+    if (isHost) return;
+    try {
+      const s = await api.getSessionStatus(session.id);
+      if (s.status !== "recording" || !s.current_take_id) {
+        setMessage("Host has not started recording yet.");
+        return;
+      }
+      const idle =
+        phaseRef.current === "ready" ||
+        phaseRef.current === "uploaded" ||
+        phaseRef.current === "upload_failed" ||
+        phaseRef.current === "error";
+      if (!idle) return;
+      resetForNewTake();
+      takeIdRef.current = s.current_take_id;
+      await beginRecording();
+      setStatusSyncError(null);
+      setMessage("Recording started on this phone.");
+    } catch (e) {
+      setMessage(describeError(e));
     }
   }
 
@@ -381,7 +421,17 @@ export default function RecordScreen({ route, navigation }: Props) {
   ).padStart(2, "0")}`;
 
   return (
-    <ScrollView contentContainerStyle={styles.screen}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }}>
+    <ScrollView
+      style={{ flex: 1 }}
+      contentContainerStyle={{
+        backgroundColor: colors.bg,
+        padding: 20,
+        paddingBottom: 56,
+        flexGrow: 1,
+      }}
+      keyboardShouldPersistTaps="handled"
+    >
       <Text style={styles.title}>{session.title}</Text>
       <Text style={styles.subtitle}>
         {participant.speaker_name} · {role === "host" ? "Host" : "Speaker mic"}
@@ -458,6 +508,8 @@ export default function RecordScreen({ route, navigation }: Props) {
         </Text>
       ) : null}
 
+      {statusSyncError ? <Text style={styles.error}>{statusSyncError}</Text> : null}
+
       {/* Upload progress + retry indicator. */}
       {phase === "uploading" ? (
         <View style={styles.card}>
@@ -499,6 +551,9 @@ export default function RecordScreen({ route, navigation }: Props) {
             Waiting for the host to start… this phone will begin recording
             automatically.
           </Text>
+          <Pressable style={styles.buttonGhost} onPress={onGuestStartNow}>
+            <Text style={styles.buttonGhostText}>Start this phone now (fallback)</Text>
+          </Pressable>
         </View>
       ) : null}
 
@@ -584,6 +639,7 @@ export default function RecordScreen({ route, navigation }: Props) {
         </Pressable>
       ) : null}
     </ScrollView>
+    </SafeAreaView>
   );
 }
 
@@ -701,7 +757,18 @@ function ResultPanel({
             </Pressable>
           ))}
         </>
-      ) : null}
+      ) : (
+        <View style={styles.card}>
+          <Text style={{ color: colors.text, fontSize: 15, fontWeight: "600" }}>
+            No playable files are showing yet
+          </Text>
+          <Text style={{ color: colors.muted, marginTop: 6, lineHeight: 20 }}>
+            The mix finished, but the playable output list is still empty on this
+            screen. If this stays empty, leave this page and re-open the session after
+            processing finishes.
+          </Text>
+        </View>
+      )}
     </View>
   );
 }

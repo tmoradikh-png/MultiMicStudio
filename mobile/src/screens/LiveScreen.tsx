@@ -3,6 +3,7 @@ import {
   Linking,
   Platform,
   Pressable,
+  SafeAreaView,
   ScrollView,
   Switch,
   Text,
@@ -40,10 +41,10 @@ const PRESETS: { id: string; label: string; desc: string }[] = [
   { id: "party", label: "Party / Room", desc: "Big, wide, fun" },
 ];
 
-export default function LiveScreen(_props: Props) {
-  const [role, setRole] = useState<Role>("speaker");
-  const [room, setRoom] = useState("");
-  const [name, setName] = useState("");
+export default function LiveScreen({ route, navigation }: Props) {
+  const [role, setRole] = useState<Role>(route.params?.role ?? "speaker");
+  const [room, setRoom] = useState(route.params?.room ?? "");
+  const [name, setName] = useState(route.params?.name ?? "");
   const [mode, setMode] = useState("natural");
   const [streamLive, setStreamLive] = useState(true);
   const [save, setSave] = useState(false);
@@ -53,11 +54,11 @@ export default function LiveScreen(_props: Props) {
     const code = encodeURIComponent(room.trim().toUpperCase());
     if (role === "mic") {
       const who = encodeURIComponent(name.trim() || "Mic");
-      return `${LIVE_BASE_URL}/live/mic?room=${code}&name=${who}`;
+      return `${LIVE_BASE_URL}/live/mic?room=${code}&name=${who}&autostart=1&embed=1`;
     }
     return `${LIVE_BASE_URL}/live/speaker?room=${code}&mode=${mode}&play=${
       streamLive ? 1 : 0
-    }${save ? "&save=1" : ""}`;
+    }${save ? "&save=1" : ""}&autostart=1&embed=1`;
   }, [role, room, name, mode, streamLive, save]);
 
   const canGoLive =
@@ -67,7 +68,7 @@ export default function LiveScreen(_props: Props) {
 
   if (live) {
     return (
-      <View style={{ flex: 1, backgroundColor: colors.bg }}>
+      <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }}>
         <WebView
           source={{ uri: liveUrl }}
           mediaPlaybackRequiresUserAction={false}
@@ -87,22 +88,40 @@ export default function LiveScreen(_props: Props) {
           originWhitelist={["*"]}
           style={{ flex: 1, backgroundColor: colors.bg }}
         />
-        <Pressable
-          style={[styles.button, { margin: 16, backgroundColor: colors.danger }]}
-          onPress={() => setLive(false)}
-        >
-          <Text style={styles.buttonText}>
-            {role === "mic" ? "Stop mic" : "Stop"}
+        <View style={{ paddingHorizontal: 16, paddingTop: 8, paddingBottom: 12 }}>
+          <Text style={{ color: colors.muted, textAlign: "center", marginBottom: 8 }}>
+            Live is running on this phone
           </Text>
-        </Pressable>
-      </View>
+          <View style={{ flexDirection: "row", gap: 10 }}>
+            <Pressable
+              style={[styles.buttonGhost, { flex: 1, marginTop: 0 }]}
+              onPress={() => {
+                setLive(false);
+                navigation.goBack();
+              }}
+            >
+              <Text style={styles.buttonGhostText}>Back</Text>
+            </Pressable>
+            <Pressable
+              style={[
+                styles.button,
+                { flex: 1, marginTop: 0, backgroundColor: colors.danger },
+              ]}
+              onPress={() => setLive(false)}
+            >
+              <Text style={styles.buttonText}>{role === "mic" ? "Stop mic" : "Stop"}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </SafeAreaView>
     );
   }
 
   return (
+    <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }}>
     <ScrollView
       style={{ flex: 1, backgroundColor: colors.bg }}
-      contentContainerStyle={{ padding: 20 }}
+      contentContainerStyle={{ padding: 20, paddingBottom: 56 }}
     >
       <Text style={styles.title}>Live sound</Text>
       <Text style={styles.subtitle}>
@@ -293,6 +312,7 @@ export default function LiveScreen(_props: Props) {
         Live server: {LIVE_BASE_URL}
       </Text>
     </ScrollView>
+    </SafeAreaView>
   );
 }
 

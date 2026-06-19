@@ -52,12 +52,16 @@ export class Recorder {
     await this.recording.stopAndUnloadAsync();
     const status = await this.recording.getStatusAsync();
     const uri = this.recording.getURI();
+    const wallSeconds = Math.max(0, (Date.now() - this.startedAtMs) / 1000);
     this.recording = null;
     if (!uri) throw new Error("Recording produced no file");
-    const durationSeconds =
+    const statusSeconds =
       "durationMillis" in status && status.durationMillis
         ? status.durationMillis / 1000
         : 0;
+    // iOS can occasionally report a too-small duration in recording status;
+    // use the larger wall-clock capture time as the client hint.
+    const durationSeconds = Math.max(statusSeconds, wallSeconds);
     return { uri, durationSeconds, startedAtMs: this.startedAtMs };
   }
 

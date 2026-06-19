@@ -43,11 +43,13 @@ export default function HomeScreen({ navigation }: Props) {
         </Text>
       </Pressable>
 
-      <Pressable style={styles.card} onPress={() => navigation.navigate("Live")}>
-        <Text style={[styles.title, { fontSize: 20 }]}>🔊 Live sound</Text>
+      <Pressable
+        style={styles.card}
+        onPress={() => navigation.navigate("P2PLive")}
+      >
+        <Text style={[styles.title, { fontSize: 20 }]}>📡 P2P Live (beta)</Text>
         <Text style={styles.subtitle}>
-          Use several phones as live mics — their sound is mixed and processed live
-          (Studio, Podcast, Party…) and played out a connected speaker.
+          Direct phone-to-phone live audio. No audio uploaded to the server.
         </Text>
       </Pressable>
 

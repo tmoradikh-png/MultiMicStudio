@@ -14,6 +14,7 @@ import CreateSessionScreen from "./src/screens/CreateSessionScreen";
 import JoinSessionScreen from "./src/screens/JoinSessionScreen";
 import RecordScreen from "./src/screens/RecordScreen";
 import LiveScreen from "./src/screens/LiveScreen";
+import P2PLiveScreen from "./src/screens/P2PLiveScreen";
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -76,6 +77,11 @@ function Routes() {
             component={LiveScreen}
             options={{ title: "Live speaker" }}
           />
+          <Stack.Screen
+            name="P2PLive"
+            component={P2PLiveScreen}
+            options={{ title: "P2P Live" }}
+          />
         </>
       ) : (
         <>
@@ -105,6 +111,11 @@ function Routes() {
             name="Live"
             component={LiveScreen}
             options={{ title: "Live speaker" }}
+          />
+          <Stack.Screen
+            name="P2PLive"
+            component={P2PLiveScreen}
+            options={{ title: "P2P Live" }}
           />
         </>
       )}

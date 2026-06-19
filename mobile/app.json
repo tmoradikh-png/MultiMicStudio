@@ -30,7 +30,8 @@
         {
           "microphonePermission": "Allow MultiMic Studio to access your microphone to record sessions."
         }
-      ]
+      ],
+      "@config-plugins/react-native-webrtc"
     ]
   }
 }

@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { api, describeError } from "../api/client";
+import { api, describeError, type JoinResult } from "../api/client";
 import { colors, styles } from "../theme";
 import type { RootStackParamList } from "../navigation/types";
 
@@ -10,6 +10,7 @@ type Props = NativeStackScreenProps<RootStackParamList, "JoinSession">;
 export default function JoinSessionScreen({ navigation }: Props) {
   const [code, setCode] = useState("");
   const [speakerName, setSpeakerName] = useState("");
+  const [joined, setJoined] = useState<JoinResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -23,16 +24,50 @@ export default function JoinSessionScreen({ navigation }: Props) {
     setError(null);
     try {
       const result = await api.joinSession(trimmed, speakerName.trim(), "mobile");
-      navigation.replace("Record", {
-        session: result.session,
-        participant: result.participant,
-        role: "speaker_mic",
-      });
+      setJoined(result);
     } catch (e) {
       setError(describeError(e));
     } finally {
       setBusy(false);
     }
+  }
+
+  if (joined) {
+    return (
+      <View style={[styles.screen, styles.center]}>
+        <Text style={styles.title}>{joined.session.title}</Text>
+        <Text style={styles.subtitle}>
+          Joined as {joined.participant.speaker_name}. Choose how this phone should work.
+        </Text>
+
+        <Pressable
+          style={styles.button}
+          onPress={() =>
+            navigation.replace("Live", {
+              room: joined.session.code,
+              role: "mic",
+              name: joined.participant.speaker_name,
+              autoStart: true,
+            })
+          }
+        >
+          <Text style={styles.buttonText}>Use this phone as live mic</Text>
+        </Pressable>
+
+        <Pressable
+          style={styles.buttonGhost}
+          onPress={() =>
+            navigation.replace("Record", {
+              session: joined.session,
+              participant: joined.participant,
+              role: "speaker_mic",
+            })
+          }
+        >
+          <Text style={styles.buttonGhostText}>Continue to recording</Text>
+        </Pressable>
+      </View>
+    );
   }
 
   return (

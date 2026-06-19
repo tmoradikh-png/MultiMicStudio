@@ -97,8 +97,21 @@ export default function CreateSessionScreen({ navigation }: Props) {
           <Text style={styles.buttonGhostText}>Share invite</Text>
         </Pressable>
 
+        <Pressable
+          style={[styles.button, { marginTop: 8 }]}
+          onPress={() =>
+            navigation.navigate("Live", {
+              room: session.code,
+              role: "speaker",
+              autoStart: true,
+            })
+          }
+        >
+          <Text style={styles.buttonText}>Go live now</Text>
+        </Pressable>
+
         <Pressable style={styles.button} onPress={onStartRecording}>
-          <Text style={styles.buttonText}>Continue to recording →</Text>
+          <Text style={styles.buttonText}>Continue to recording</Text>
         </Pressable>
       </View>
     );
